@@ -11,6 +11,10 @@ import argparse
 import uuid
 import json # nice logging of configuration objects
 
+# protobuf
+from message_definitions.message_pb2 import ProcessingRequest, StageLog, Data
+from google.protobuf.timestamp_pb2 import Timestamp
+
 # zookeeper
 from kazoo.client import KazooClient
 from kazoo.handlers.threading import KazooTimeoutError
@@ -27,54 +31,27 @@ stderr_handler.setFormatter(log_formatter)
 logger = logging.getLogger(__name__)
 logger.addHandler(stderr_handler)
 
+# === Global config ===
+tag = None
 
 # === Functions ===
 
+def dir_path(path):
+    """
+    Check if path is directory path
+    :param path: path to directory
+    :return: path if path is direcotry path
+    :raise: ArgumentTypeError if path is not direcotry path
+    """
+    if os.path.isdir(path):
+        return path
+    raise argparse.ArgumentTypeError(f"{path} is not a valid path")
 
 def parse_args():
     """
     Parses arguments given on commandline
     :return: namespace with parsed args
     """
-    
-    def dir_path(path):
-        """
-        Check if path is directory path
-        :param path: path to directory
-        :return: path if path is direcotry path
-        :raise: ArgumentTypeError if path is not direcotry path
-        """
-        if os.path.isdir(path):
-            return path
-        raise argparse.ArgumentTypeError(f"{path} is not a valid path")
-    
-    def queue_arg_parser(queue_args):
-        """
-        Generates queue arguments dict.
-        Checks if qeueu arguments are in correct format.
-        :param queue_args: Queue args list to check
-        :return: queue arguments dict or None if no arguments are supplied
-        :raise: ValueError in arguments are not in Key=Value format
-        """
-        # create queue argumets dict
-        if queue_args:
-            queue_arguments = {}
-            for arg in queue_args:
-                n = 0
-                for char in arg:
-                    if char == '=':
-                        n += 1
-                if n != 1:
-                    raise ValueError('Wrong queue argument format!')
-                # add argument to arguments
-                queue_arguments[arg.split('=')[0]] = arg.split('=')[-1]
-            
-            # return generated arguments
-            return queue_arguments
-        
-        # default
-        return None
-    
     argparser = argparse.ArgumentParser('Worker for page processing.')
     argparser.add_argument(
         '-z', '--zookeeper-servers',
@@ -90,17 +67,11 @@ def parse_args():
         '-b', '--broker-servers',
         help='List of message queue broker servers where to get and send processing requests.',
         nargs='+', # TODO - check if addresses are valid
-        default=['127.0.0.1:5672']
+        default=['127.0.0.1']
     )
     argparser.add_argument(
         '-q', '--queue',
         help='Queue with messages to process.'
-    )
-    argparser.add_argument(
-        '-a', '--queue-args',
-        help='Queue declaration arguments. Format is Key=Value, multiple arguments have to be separated by space.',
-        nargs='+',
-        default=None
     )
     argparser.add_argument(
         '--ocr',
@@ -109,6 +80,26 @@ def parse_args():
     )
     return argparser.parse_args()
 
+
+# === OCR Functions ===
+
+def ocr_process_request(processing_request):
+    """
+    Processes processing request using OCR
+    :param processing_request: processing request to work on
+    :return: processing request for next stage
+    """
+    # TODO
+    # ocr processing
+
+    # tmp functionality
+    img = open(f'~/skola/bakalarka/temp/{processing_request.data.name}', 'w')
+    img.write(processing_request.data.content)
+    img.close()
+    return processing_request
+
+
+# === Zookeeper Functions ===
 
 def zk_gen_id(zk):
     """
@@ -124,6 +115,9 @@ def zk_gen_id(zk):
     
     return worker_id
 
+
+# === Message Broker Functions ===
+
 def mq_process_request(channel, method, properties, body):
     """
     Process message received from message broker channel
@@ -132,12 +126,21 @@ def mq_process_request(channel, method, properties, body):
     :param properties: additional message properties
     :param body: message body (actual processing request)
     """
-    #processing_request = None
-    # TODO
-    # process the request
+    global tag
+    processing_request = ProcessingRequest().FromString(body)
+    current_stage = processing_request.processing_stages.pop(0)
+    logger.debug(f'Request stage: {current_stage}')
+
+    processed_request = ocr_process_request(processing_request)
     
     # acknowledge the request after successfull processing
-    #channel.basic_ack(delivery_tag = method.delivery_tag)
+    if processed_request:
+        # TODO
+        # send message to output channel
+        channel.basic_ack(delivery_tag = method.delivery_tag)
+    # reject request on failure and disconnect from queue
+    else:
+        channel.basic_cancel(consumer_tag = tag)
 
 def mq_connect(broker):
     """
@@ -150,23 +153,22 @@ def mq_connect(broker):
     connection = pika.BlockingConnection(pika.ConnectionParameters(host=broker))
     return connection.channel()
 
-def mq_queue_input_setup(channel, queue, queue_args=None):
+def mq_queue_input_setup(channel, queue):
     """
-    Setup input queue on channel
+    Setup parameters for input queue on channel
     :param channel: channel to connected broker
     :param queue: queue to get messages from
-    :param queue_args: addititonal queue arguments
-    :raise: ValueError if queue cannot be declared
+    :return: worker tag for canceling the connection
+    :raise: ValueError if queue is not declared or channel is not initialized
     """
-    # create queue
-    channel.queue_declare(queue, arguments=queue_args)
-
     # set prefetch length for this consumer
     channel.basic_qos(prefetch_count=5)
 
-    # register callback for data processing
-    channel.basic_consume(queue, mq_process_request)
+    # register callback for data processing, return worker tag
+    return channel.basic_consume(queue, mq_process_request)
 
+
+# === Main ===
 
 def main():
     # get commandline arguments
@@ -183,15 +185,16 @@ def main():
             break
     
     if not channel:
-        logger.error('Failed to connect to the message broker!')
+        logger.error(f'Failed to connect to the message broker {broker}!')
         return 1
     
-    # setup queue to receive data from
+    # setup queue for data receiving, get worker tag
     try:
-        mq_queue_input_setup(channel, args.queue, args.queue_args)
+        global tag
+        tag = mq_queue_input_setup(channel, args.queue)
     except ValueError:
-        logger.error(f'Failed to declare queue {args.queue} with argumets {json.dumps(args.queue_args)}!')
-        channel.close()  # close connection to mq
+        logger.error(f'Failed to start consuming from queue {args.queue}!')
+        channel.close()  # close mq channel
         return 1
 
     # start processing queue
@@ -200,6 +203,9 @@ def main():
         channel.start_consuming()
     except KeyboardInterrupt:
         pass
+    except pika.exceptions.ChannelClosed:
+        logger.error('Channel closed by broker!')
+        exit_code = 1
     except Exception:
         # TODO
         # add traceback to error
@@ -207,6 +213,7 @@ def main():
         exit_code = 1
     finally:
         # close mq channel
+        logger.info('Closing connections.')
         channel.close()
 
     return exit_code
