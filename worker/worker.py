@@ -9,7 +9,9 @@ import sys
 import os # filesystem
 import argparse
 import uuid
-import json # nice logging of configuration objects
+#import json # nice logging of configuration objects
+import traceback # logging
+import uuid
 
 # protobuf
 from message_definitions.message_pb2 import ProcessingRequest, StageLog, Data
@@ -19,20 +21,20 @@ from google.protobuf.timestamp_pb2 import Timestamp
 from kazoo.client import KazooClient
 from kazoo.handlers.threading import KazooTimeoutError
 
-# setup logging (kazoo requires at least minimum config)
-logging.basicConfig()
-
-# setup logger
+# setup logging (required by kazoo)
 log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 
 stderr_handler = logging.StreamHandler()
 stderr_handler.setFormatter(log_formatter)
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+# TODO - remove debug level
+logger.setLevel(logging.DEBUG)
 logger.addHandler(stderr_handler)
 
 # === Global config ===
-tag = None
+worker_id = None
 
 # === Functions ===
 
@@ -87,33 +89,51 @@ def ocr_process_request(processing_request):
     """
     Processes processing request using OCR
     :param processing_request: processing request to work on
-    :return: processing request for next stage
+    :return: processing status
     """
+    global worker_id
     # TODO
     # ocr processing
 
     # tmp functionality
-    img = open(f'~/skola/bakalarka/temp/{processing_request.data.name}', 'w')
-    img.write(processing_request.data.content)
-    img.close()
-    return processing_request
+    # Gen log
+    log = processing_request.logs.add()
+    log.host_id = worker_id
+    log.stage = processing_request.processing_stages[0]
+    logger.debug(f'Stage: {processing_request.processing_stages[0]}')
+    logger.debug(f'Log avaliable for: {log.stage}')
+    Timestamp.GetCurrentTime(log.start)
+
+    # Save image
+    for result in processing_request.results:
+        with open(f'/home/pavel/skola/bakalarka/temp/worker/{result.name}', 'wb') as img:
+            img.write(result.content)
+            log.status = "OK"
+    
+    if not log.status:
+        log.status = "NOK"
+
+    Timestamp.GetCurrentTime(log.end)
+    log.log = "Lorem Ipsum"
+    
+    return True
 
 
 # === Zookeeper Functions ===
 
-def zk_gen_id(zk):
+def zk_gen_id():# TODO (zk):
     """
     Generate new id for the worker.
     :param zk: active zookeeper connection
     :return: worker id
     """
+    global worker_id
     worker_id = uuid.uuid4().hex
 
+    # TODO
     # check for conflicts in zookeeper clients
-    while zk.exists(f'/pero/worker/{worker_id}'):
-        worker_id = uuid.uuid4().hex
-    
-    return worker_id
+    #while zk.exists(f'/pero/worker/{worker_id}'):
+    #    worker_id = uuid.uuid4().hex
 
 
 # === Message Broker Functions ===
@@ -125,22 +145,27 @@ def mq_process_request(channel, method, properties, body):
     :param method: message delivery method
     :param properties: additional message properties
     :param body: message body (actual processing request)
+    :raise: ValueError if output queue is not declared on broker
     """
-    global tag
+    global worker_id
     processing_request = ProcessingRequest().FromString(body)
-    current_stage = processing_request.processing_stages.pop(0)
+    current_stage = processing_request.processing_stages[0]
+    logger.info(f'Processing request: {processing_request.uuid}')
     logger.debug(f'Request stage: {current_stage}')
 
-    processed_request = ocr_process_request(processing_request)
+    status = ocr_process_request(processing_request)
+    processing_request.processing_stages.pop(0)
+    next_stage = processing_request.processing_stages[0]
     
     # acknowledge the request after successfull processing
-    if processed_request:
+    if status:
         # TODO
         # send message to output channel
+        channel.basic_publish('', next_stage, processing_request.SerializeToString())
         channel.basic_ack(delivery_tag = method.delivery_tag)
     # reject request on failure and disconnect from queue
     else:
-        channel.basic_cancel(consumer_tag = tag)
+        channel.basic_cancel(consumer_tag = worker_id)
 
 def mq_connect(broker):
     """
@@ -153,34 +178,37 @@ def mq_connect(broker):
     connection = pika.BlockingConnection(pika.ConnectionParameters(host=broker))
     return connection.channel()
 
-def mq_queue_input_setup(channel, queue):
+def mq_queue_input_setup(channel, queue, worker_id):
     """
     Setup parameters for input queue on channel
     :param channel: channel to connected broker
     :param queue: queue to get messages from
-    :return: worker tag for canceling the connection
-    :raise: ValueError if queue is not declared or channel is not initialized
+    :param worker_id: id of this worker
+    :raise: pika.exceptions.ChannelClosedByBroker if queue is not declared on broker
     """
     # set prefetch length for this consumer
     channel.basic_qos(prefetch_count=5)
 
-    # register callback for data processing, return worker tag
-    return channel.basic_consume(queue, mq_process_request)
+    # register callback for data processing
+    channel.basic_consume(queue, mq_process_request, consumer_tag = worker_id)
 
 
 # === Main ===
 
 def main():
+    global worker_id
     # get commandline arguments
     args = parse_args()
 
     # TODO
     # connect to zookeeper
     # get configurations from zookeeper
+    # generate worker id
+    zk_gen_id()
 
     # get channel to message broker
-    for broker in args.broker:
-        channel = mq_connect(args.broker)
+    for broker in args.broker_servers:
+        channel = mq_connect(broker)
         if channel:
             break
     
@@ -188,13 +216,14 @@ def main():
         logger.error(f'Failed to connect to the message broker {broker}!')
         return 1
     
-    # setup queue for data receiving, get worker tag
+    # setup queue for data receiving
     try:
-        global tag
-        tag = mq_queue_input_setup(channel, args.queue)
-    except ValueError:
-        logger.error(f'Failed to start consuming from queue {args.queue}!')
-        channel.close()  # close mq channel
+        mq_queue_input_setup(channel, args.queue, worker_id)
+    except pika.exceptions.ChannelClosedByBroker as e:
+        logger.critical(f'Failed to start consuming from queue {args.queue}!')
+        logger.critical(e)
+        if channel.is_open:
+            channel.close()  # close mq channel
         return 1
 
     # start processing queue
@@ -204,17 +233,18 @@ def main():
     except KeyboardInterrupt:
         pass
     except pika.exceptions.ChannelClosed:
-        logger.error('Channel closed by broker!')
+        logger.critical('Channel closed by broker!')
+        logger.critical(traceback.format_exc())
         exit_code = 1
     except Exception:
-        # TODO
-        # add traceback to error
-        logger.error('Unknown error has occured! Exititng!')
+        logger.critical('Unknown error has occured! Exititng!')
+        logger.critical(traceback.format_exc())
         exit_code = 1
     finally:
         # close mq channel
-        logger.info('Closing connections.')
-        channel.close()
+        if channel.is_open:
+            logger.info('Closing connections.')
+            channel.close()
 
     return exit_code
 
