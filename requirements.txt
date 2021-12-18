@@ -1,3 +1,23 @@
+# processing system dependencies
 kazoo
 pika
 protobuf
+python-magic
+
+# pero OCR dependencies
+numpy
+opencv-python
+lxml
+scipy
+numba
+torch
+torchvision
+brnolm
+scikit-learn
+scikit-image
+tensorflow-gpu
+shapely
+pyamg
+imgaug
+arabic_reshaper
+

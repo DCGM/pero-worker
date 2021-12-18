@@ -78,12 +78,12 @@ def consume(channel, method, properties, body):
     print(f'Result file names:')
     for i, result in enumerate(message.results):
         print(f' {i} : {result.name}')
-        with open(f'{output}{result.name}', 'wb') as file:
+        with open(os.path.join(output, result.name), 'wb') as file:
             file.write(result.content)
     print(f'Stage logs avaliable for:')
     for i, log in enumerate(message.logs):
         print(f' {i} : {log.stage}')
-        with open(f'{output}{log.stage}', 'w') as file:
+        with open(os.path.join(output, log.stage), 'w') as file:
             file.write(log.log)
     
     channel.basic_ack(delivery_tag = method.delivery_tag)
@@ -96,10 +96,6 @@ def main():
     # check if output folder points to directory
     if not os.path.isdir(args.output_folder):
         raise ValueError(f'{args.output_folder} is not a directory!')
-    
-    # add tailing slash
-    if args.output_folder[-1] != '/':
-        args.output_folder += '/'
     
     # set output folder
     global output

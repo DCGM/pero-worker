@@ -2,16 +2,26 @@
 
 # Worker for page processing
 
-import pika # AMQP protocol library for queues
+import pika  # AMQP protocol library for queues
 import logging
 import time
 import sys
-import os # filesystem
+import os  # filesystem
 import argparse
 import uuid
-#import json # nice logging of configuration objects
-import traceback # logging
-import uuid
+#import json  # nice logging of configuration objects
+import traceback  # logging
+import configparser
+
+# load image and data for processing
+import cv2
+import pickle
+import magic
+import numpy as np
+
+# pero OCR
+from pero_ocr.document_ocr.layout import PageLayout
+from pero_ocr.document_ocr.page_parser import PageParser
 
 # protobuf
 from message_definitions.message_pb2 import ProcessingRequest, StageLog, Data
@@ -20,6 +30,15 @@ from google.protobuf.timestamp_pb2 import Timestamp
 # zookeeper
 from kazoo.client import KazooClient
 from kazoo.handlers.threading import KazooTimeoutError
+
+
+# === Global config ===
+
+# global variables
+worker_id = None  # id to identify worker instance
+tmp_folder = None  # folder where to store temporary files
+config = None  # configuration for the page parser
+ocr_path = None  # Path to folder with config and OCR data
 
 # setup logging (required by kazoo)
 log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
@@ -33,8 +52,6 @@ logger.setLevel(logging.INFO)
 logger.setLevel(logging.DEBUG)
 logger.addHandler(stderr_handler)
 
-# === Global config ===
-worker_id = None
 
 # === Functions ===
 
@@ -80,22 +97,44 @@ def parse_args():
         help='Folder with OCR data and config file in .ini format.',
         type=dir_path
     )
+    argparser.add_argument(
+        '--tmp-folder',
+        help='Path to folder where temporary files will be stored.',
+        type=dir_path
+    )
     return argparser.parse_args()
+
+def clean_tmp_files(path):
+    """
+    Removes temporary files and directories recursively.
+    :param path: path to file/folder to clean up
+    """
+    # path is not valid
+    if not os.path.exists(path):
+        return
+    
+    # remove temp file
+    if os.path.isfile(path):
+        os.unlink(path)
+        return
+    
+    # clean files from temp directory
+    for file in os.listdir(path):
+        clean_tmp_files(path)
+    
+    # remove temp direcotry
+    os.rmdir(path)
 
 
 # === OCR Functions ===
 
-def ocr_process_request(processing_request):
+def ocr_test_process_request(processing_request, worker_id):
     """
-    Processes processing request using OCR
+    Test method to check if commuincation is working
     :param processing_request: processing request to work on
+    :param worker_id: id of the worker
     :return: processing status
     """
-    global worker_id
-    # TODO
-    # ocr processing
-
-    # tmp functionality
     # Gen log
     log = processing_request.logs.add()
     log.host_id = worker_id
@@ -118,6 +157,76 @@ def ocr_process_request(processing_request):
     
     return True
 
+def ocr_process_request(processing_request, worker_id, config, ocr_path):
+    """
+    Process processing request using OCR
+    :param processing_request: processing request to work on
+    :param worker_id: id of this worker
+    :param config: configuration for OCR
+    :param ocr_path: path to OCR data
+    :return: processing status
+    """
+    # Gen log
+    log = processing_request.logs.add()
+    log.host_id = worker_id
+    log.stage = processing_request.processing_stages[0]
+    logger.debug(f'Stage: {log.stage}')
+    Timestamp.GetCurrentTime(log.start)
+
+    # Load data
+    img = None
+    xml_in = None
+    logits_in = None
+
+    for i, data in enumerate(processing_request.results):
+        ext = os.path.splitext(data.name)[1]
+        datatype = magic.from_buffer(data.content, mime=True)
+        logger.debug(f'File: {data.name}, type: {datatype}')
+        if datatype.split('/')[0] == 'image':  # recognize image
+            img = cv2.imdecode(np.fromstring(processing_request.results[i].content, dtype=np.uint8), 1)
+        if ext == 'xml':  # pagexml is missing xml header - type can't be recognized - type = text/plain
+            xml_in = processing_request.results[i].content.decode('utf-8')
+        if ext == 'logits':  # type = application/octet-stream
+            logits_in = processing_request.results[i].content
+    
+    # Run processing
+    page_parser = PageParser(config, ocr_path)  # TODO - init ocr when input queue is selected (usign zk)!
+    if xml_in:
+        page_layout = PageLayout().from_pagexml_string(xml_in)
+    else:
+        page_layout = PageLayout(id=processing_request.page_uuid, page_size=(img.shape[0], img.shape[1]))
+    if logits_in:
+        page_layout.load_logits(logits_in)
+    page_layout = page_parser.process_page(img, page_layout)
+    
+    # Save output
+    xml_out = page_layout.to_pagexml_string()
+    logits_out = page_layout.save_logits_bytes()
+
+    for data in processing_request.results:
+        ext = os.path.splitext(data.name)[1]
+        if ext == 'xml':
+            data.content = xml_out.encode('utf-8')
+        if ext == 'logits':
+            data.content = logits_out
+    
+    if xml_out and not xml_in:
+        xml = processing_request.results.add()
+        xml.name = 'page.xml'
+        xml.content = xml_out.encode('utf-8')
+    
+    if logits_out and not logits_in:
+        logits = processing_request.results.add()
+        logits.name = 'page.logits'
+        logits.content = logits_out
+    
+    # Log end of processing
+    Timestamp.GetCurrentTime(log.end)
+    # TODO - log content
+    #log.log = "Lorem Ipsum"
+
+    return True
+
 
 # === Zookeeper Functions ===
 
@@ -127,7 +236,6 @@ def zk_gen_id():# TODO (zk):
     :param zk: active zookeeper connection
     :return: worker id
     """
-    global worker_id
     worker_id = uuid.uuid4().hex
 
     # TODO
@@ -135,12 +243,14 @@ def zk_gen_id():# TODO (zk):
     #while zk.exists(f'/pero/worker/{worker_id}'):
     #    worker_id = uuid.uuid4().hex
 
+    return worker_id
+
 
 # === Message Broker Functions ===
 
 def mq_process_request(channel, method, properties, body):
     """
-    Process message received from message broker channel
+    Callback function for processing messages received from message broker channel
     :param channel: channel from which the message is originated
     :param method: message delivery method
     :param properties: additional message properties
@@ -148,12 +258,16 @@ def mq_process_request(channel, method, properties, body):
     :raise: ValueError if output queue is not declared on broker
     """
     global worker_id
+    global tmp_folder
+    global config
+    global ocr_path
+
     processing_request = ProcessingRequest().FromString(body)
     current_stage = processing_request.processing_stages[0]
     logger.info(f'Processing request: {processing_request.uuid}')
     logger.debug(f'Request stage: {current_stage}')
 
-    status = ocr_process_request(processing_request)
+    status = ocr_process_request(processing_request, worker_id, config, ocr_path)
     processing_request.processing_stages.pop(0)
     next_stage = processing_request.processing_stages[0]
     
@@ -196,7 +310,12 @@ def mq_queue_input_setup(channel, queue, worker_id):
 # === Main ===
 
 def main():
+    # global vars:
     global worker_id
+    global tmp_folder
+    global config
+    global ocr_path
+
     # get commandline arguments
     args = parse_args()
 
@@ -204,7 +323,18 @@ def main():
     # connect to zookeeper
     # get configurations from zookeeper
     # generate worker id
-    zk_gen_id()
+    worker_id = zk_gen_id()
+    logger.info(f'Worker ID: {worker_id}')
+
+    # setup folder for temporary data
+    tmp_folder = args.tmp_folder if args.tmp_folder else f'/tmp/pero-worker-{worker_id}'
+    if not os.path.isdir(tmp_folder):
+        os.makedirs(tmp_folder)
+    
+    # load OCR config
+    config = configparser.ConfigParser()
+    config.read(os.path.join(args.ocr, 'config.ini'))
+    ocr_path = args.ocr
 
     # get channel to message broker
     for broker in args.broker_servers:
@@ -214,6 +344,7 @@ def main():
     
     if not channel:
         logger.error(f'Failed to connect to the message broker {broker}!')
+        clean_tmp_files(tmp_folder)  # remove temp folder
         return 1
     
     # setup queue for data receiving
@@ -224,6 +355,7 @@ def main():
         logger.critical(e)
         if channel.is_open:
             channel.close()  # close mq channel
+        clean_tmp_files(tmp_folder)  # remove temp folder
         return 1
 
     # start processing queue
@@ -245,6 +377,9 @@ def main():
         if channel.is_open:
             logger.info('Closing connections.')
             channel.close()
+        
+        # remove temp folder
+        clean_tmp_files(tmp_folder)
 
     return exit_code
 

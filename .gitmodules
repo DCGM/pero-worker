@@ -1,0 +1,3 @@
+[submodule "worker/pero-ocr"]
+	path = worker/pero-ocr
+	url = git@github.com:DCGM/pero-ocr.git
