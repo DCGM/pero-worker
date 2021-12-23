@@ -131,7 +131,3 @@ dmypy.json
 # VSCode / VSCodium config
 .vscode
 
-# caches and generated files
-__pycache__
-*.pyc
-
