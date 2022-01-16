@@ -30,6 +30,11 @@ from google.protobuf.timestamp_pb2 import Timestamp
 # zookeeper
 from kazoo.client import KazooClient
 from kazoo.handlers.threading import KazooTimeoutError
+import kazoo.exceptions as zk_exceptions
+
+# constants
+import worker_functions.constants as constants
+import worker_functions.zk_functions as zkf
 
 
 # === Global config ===
@@ -71,46 +76,51 @@ def parse_args():
     Parses arguments given on commandline
     :return: namespace with parsed args
     """
-    argparser = argparse.ArgumentParser('Worker for page processing.')
+    argparser = argparse.ArgumentParser('Worker for page processing')
     argparser.add_argument(
-        '-z', '--zookeeper-servers',
+        '-z', '--zookeeper',
         help='List of zookeeper servers from where configuration will be downloaded. If port is omitted, default zookeeper port is used.',
         nargs='+', # TODO - check if addresses are valid
         default=['127.0.0.1:2181']
     )
     argparser.add_argument(
+        '-l', '--zookeeper-list',
+        help='File with list of zookeeper servers. One server per line.',
+        type=argparse.FileType('r')
+    )
+    argparser.add_argument(
         '-i', '--id',
-        help='Worker id for identification in zookeeper.'
+        help='Worker id for identification in zookeeper'
     )
     argparser.add_argument(
         '-b', '--broker-servers',
-        help='List of message queue broker servers where to get and send processing requests.',
+        help='List of message queue broker servers where to get and send processing requests',
         nargs='+', # TODO - check if addresses are valid
         default=['127.0.0.1']
     )
     argparser.add_argument(
         '-q', '--queue',
-        help='Queue with messages to process.'
+        help='Queue with messages to process'
     )
     argparser.add_argument(
         '--ocr',
-        help='Folder with OCR data and config file in .ini format.',
+        help='Folder with OCR data and config file in .ini format',
         type=dir_path
     )
     argparser.add_argument(
         '--tmp-folder',
-        help='Path to folder where temporary files will be stored.',
+        help='Path to folder where temporary files will be stored',
         type=dir_path
     )
     return argparser.parse_args()
 
 def clean_tmp_files(path):
     """
-    Removes temporary files and directories recursively.
+    Removes temporary files and directories recursively
     :param path: path to file/folder to clean up
     """
     # path is not valid
-    if not os.path.exists(path):
+    if not path or not os.path.exists(path):
         return
     
     # remove temp file
@@ -125,6 +135,21 @@ def clean_tmp_files(path):
     # remove temp direcotry
     os.rmdir(path)
 
+def clean_up(zk, channel, tmp):
+    """
+    Cleans up connections and temporary files before worker stops
+    :param zk: zookeeper connection
+    :param channel: mq channel
+    :tmp: temporary files path
+    """
+    if zk and zk.connected:
+        zk.stop()
+        zk.close()
+    
+    if channel and channel.is_open:
+        channel.close()
+    
+    clean_tmp_files(tmp)
 
 # === OCR Functions ===
 
@@ -230,21 +255,67 @@ def ocr_process_request(processing_request, worker_id, config, ocr_path):
 
 # === Zookeeper Functions ===
 
-def zk_gen_id():# TODO (zk):
+def zk_gen_id(zk):
     """
-    Generate new id for the worker.
+    Generate new id for the worker
     :param zk: active zookeeper connection
     :return: worker id
     """
     worker_id = uuid.uuid4().hex
 
-    # TODO
     # check for conflicts in zookeeper clients
-    #while zk.exists(f'/pero/worker/{worker_id}'):
-    #    worker_id = uuid.uuid4().hex
+    while zk.exists(f'/pero/worker/{worker_id}'):
+        worker_id = uuid.uuid4().hex
 
     return worker_id
 
+def zk_get_mq_servers(zk):
+    """
+    Returns list of message broker servers obtained from zookeeper
+    :param zk: zookeeper connection
+    :return: list of message broker servers
+    """
+    try:
+        mq_servers = zk.get_children(constants.WORKER_CONFIG_MQ_SERVERS)[0].decode('utf-8')
+    except zk_exceptions.NoNodeError:
+        logger.debug('Failed to get MQ server addresses.')
+        mq_servers = []
+    
+    return mq_servers
+
+def zk_set_status(zk, worker_id, status):
+    """
+    Set worker status in zookeeper
+    :param zk: zookeeper connection
+    :param worker_id: id of the worker
+    :param status: status to set
+    :raise: NoNodeError if status node path is not initialized
+    :raise: ZookeeperError if server returns non zero value
+    """
+    zk.set(constants.WORKER_STATUS_TEMPLATE.format(worker_id = worker_id), status.encode('UTF-8'))
+
+def zk_set_queue(zk, worker_id, queue):
+    """
+    Set queue that is beeing processed by worker in zookeeper
+    :param zk: zookeeper connection
+    :param worker_id: id of the worker
+    :param queue: queue to set
+    :raise: NoNodeError if queue node path is not initialized
+    :raise: ZookeeperError if server returns non zero error code
+    """
+    zk.set(constants.WORKER_QUEUE_TEMPLATE.format(worker_id = worker_id), queue.encode('UTF-8'))
+
+def zk_worker_init(zk, worker_id):
+    """
+    Initializes state of worker in zookeeper
+    :param zk: zookeeper connection
+    :param worker_id: id of the worker
+    :raise: NodeExistsError if worker with this id is already defined in zookeeper
+    :raise: ZookeeperError if server returns non zero value
+    """
+    zk.create(constants.WORKER_STATUS_TEMPLATE.format(worker_id=worker_id), constants.STATUS_STARTING.encode('UTF-8'), makepath=True)
+    zk.create(constants.WORKER_QUEUE_TEMPLATE.format(worker_id=worker_id))
+    zk.create(constants.WORKER_ENABLED_TEMPLATE.format(worker_id=worker_id), 'True'.encode('UTF-8'))
 
 # === Message Broker Functions ===
 
@@ -319,12 +390,50 @@ def main():
     # get commandline arguments
     args = parse_args()
 
-    # TODO
     # connect to zookeeper
+    zookeeper_servers = zkf.zk_server_list(args.zookeeper)
+    if args.zookeeper_list:
+        zookeeper_servers = zkf.zk_server_list(args.zookeeper_list)
+
+    zk = KazooClient(hosts=zookeeper_servers)
+    
+    try:
+        zk.start(timeout=20)
+    except KazooTimeoutError:
+        logger.critical('Zookeeper connection timeout!')
+        return 1
+
     # get configurations from zookeeper
+    try:
+        # TODO
+        #broker_servers = zk_get_mq_servers(zk)
+        broker_servers = args.broker_servers
+    except KazooTimeoutError as e:
+        logger.critical('Zookeeper connection failed!')
+        logger.critical(traceback.format_exc())
+        clean_up(zk, None, tmp_folder)
+        return 1
+
     # generate worker id
-    worker_id = zk_gen_id()
+    try:
+        worker_id = zk_gen_id(zk) if not args.id else args.id
+    except zk_exceptions.ZookeeperError:
+        logger.critical('Failed to check worker id in zookeeper!')
+        logger.critical(traceback.format_exc())
+        clean_up(zk, None, tmp_folder)
+        return 1
     logger.info(f'Worker ID: {worker_id}')
+
+    # set zookeeper status
+    try:
+        zk_worker_init(zk, worker_id)
+    except zk_exceptions.NodeExistsError:
+        logger.error('Worker configuration found in zookeeper! Recovering node.')
+    except Exception:
+        logger.critical('Worker registration in zookeeper failed!')
+        logger.critical(traceback.format_exc())
+        clean_up(zk, None, tmp_folder)
+        return 1
 
     # setup folder for temporary data
     tmp_folder = args.tmp_folder if args.tmp_folder else f'/tmp/pero-worker-{worker_id}'
@@ -337,14 +446,14 @@ def main():
     ocr_path = args.ocr
 
     # get channel to message broker
-    for broker in args.broker_servers:
+    for broker in broker_servers:
         channel = mq_connect(broker)
         if channel:
             break
     
     if not channel:
         logger.error(f'Failed to connect to the message broker {broker}!')
-        clean_tmp_files(tmp_folder)  # remove temp folder
+        clean_up(zk, channel, tmp_folder)
         return 1
     
     # setup queue for data receiving
@@ -352,18 +461,24 @@ def main():
         mq_queue_input_setup(channel, args.queue, worker_id)
     except pika.exceptions.ChannelClosedByBroker as e:
         logger.critical(f'Failed to start consuming from queue {args.queue}!')
-        logger.critical(e)
-        if channel.is_open:
-            channel.close()  # close mq channel
-        clean_tmp_files(tmp_folder)  # remove temp folder
+        logger.critical('Channel error: {}'.format(e))
+        clean_up(zk, channel, tmp_folder)
         return 1
+    
+    # set zookeeper status
+    try:
+        zk_set_queue(zk, worker_id, args.queue)
+        zk_set_status(zk, worker_id, constants.STATUS_PROCESSING)
+    except zk_exceptions.ZookeeperError as e:
+        logger.error('Failed to set status in zookeeper!')
+        logger.error('Zookeeper error: {}'.format(e))
 
     # start processing queue
     exit_code = 0
     try:
         channel.start_consuming()
     except KeyboardInterrupt:
-        pass
+        logger.info('Shutdown signal received')
     except pika.exceptions.ChannelClosed:
         logger.critical('Channel closed by broker!')
         logger.critical(traceback.format_exc())
@@ -373,13 +488,13 @@ def main():
         logger.critical(traceback.format_exc())
         exit_code = 1
     finally:
-        # close mq channel
-        if channel.is_open:
-            logger.info('Closing connections.')
-            channel.close()
-        
-        # remove temp folder
-        clean_tmp_files(tmp_folder)
+        try:  # set status in zookeeper
+            zk_set_status(zk, worker_id, constants.STATUS_FAILED if exit_code else constants.STATUS_DEAD)
+        except Exception as e:
+            logger.error('Failed to set status in zookeeper!')
+            logger.error('Received error: {}'.format(e))
+        logger.info('Closing connections and cleaning up')
+        clean_up(zk, channel, tmp_folder)
 
     return exit_code
 
