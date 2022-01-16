@@ -1,0 +1,5 @@
+# pero ocr
+ffmpeg
+build-essential
+python3-dev
+
