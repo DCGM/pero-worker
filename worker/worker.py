@@ -240,7 +240,8 @@ def ocr_process_request(processing_request, worker_id, config, ocr_path):
         if ext == '.xml':
             data.content = xml_out.encode('utf-8')
         if ext == '.logits':
-            data.content = logits_out
+            if logits_out:
+                data.content = logits_out
     
     if xml_out and not xml_in:
         xml = processing_request.results.add()
