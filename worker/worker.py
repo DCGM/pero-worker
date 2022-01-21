@@ -207,7 +207,6 @@ def ocr_process_request(processing_request, worker_id, config, ocr_path):
         ext = os.path.splitext(data.name)[1]
         datatype = magic.from_buffer(data.content, mime=True)
         logger.debug(f'File: {data.name}, type: {datatype}')
-        logger.debug(ext)
         if datatype.split('/')[0] == 'image':  # recognize image
             img = cv2.imdecode(np.fromstring(processing_request.results[i].content, dtype=np.uint8), 1)
         if ext == '.xml':  # pagexml is missing xml header - type can't be recognized - type = text/plain
@@ -238,7 +237,6 @@ def ocr_process_request(processing_request, worker_id, config, ocr_path):
 
     for data in processing_request.results:
         ext = os.path.splitext(data.name)[1]
-        logger.debug(ext)
         if ext == '.xml':
             data.content = xml_out.encode('utf-8')
         if ext == '.logits':
