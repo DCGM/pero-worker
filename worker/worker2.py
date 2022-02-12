@@ -40,7 +40,7 @@ import worker_functions.zk_functions as zkf
 # === Global config ===
 
 # setup logging (required by kazoo)
-log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+log_formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
 
 stderr_handler = logging.StreamHandler()
 stderr_handler.setFormatter(log_formatter)
@@ -113,7 +113,7 @@ class Worker(object):
     Pero processing worker
     """
 
-    def __init__(self, zookeeper_servers, broker_servers = [], worker_id = None, tmp_directory = None, enabled = True):
+    def __init__(self, zookeeper_servers, mq_servers = [], worker_id = None, tmp_directory = None, enabled = True):
         """
         Initialize worker
         :param worker_id: worker identifier
@@ -124,7 +124,7 @@ class Worker(object):
         self.worker_id = worker_id
         self.tmp_directory = tmp_directory
         self.zookeeper_servers = zookeeper_servers
-        self.broker_servers = broker_servers
+        self.mq_servers = mq_servers
 
         # configuration for the page parser and selected orc
         self.config = None
@@ -136,20 +136,25 @@ class Worker(object):
         self.zk = None
 
         # selected broker server
-        self._mq_server = None
+        self.mq_server = None
 
         # worker status
         self.status = constants.STATUS_DEAD
         self.queue = None
+        self.active_queue = None
         self.enabled = enabled
 
-    def clean_tmp_files(self, path = self.tmp_directory):
+    def clean_tmp_files(self, path=None):
         """
         Removes temporary files and directories recursively
         :param path: path to file/directory to clean up
         """
+        # default path = temp directory
+        if not path:
+            path = self.tmp_directory
+        
         # path is not valid
-        if not path or not os.path.exists(path):
+        if not os.path.exists(path):
             return
         
         # remove temp file
@@ -169,6 +174,7 @@ class Worker(object):
         Cleans up connections and temporary files before worker stops
         """
         logger.info('Closing connection and cleaning up')
+        self.update_status(constants.STATUS_DEAD)
         self.mq_disconnect()
         self.zk_disconnect()
         self.clean_tmp_files()
@@ -203,7 +209,6 @@ class Worker(object):
             logger.error('Zookeeper connection timeout!')
             raise
     
-    @zk.DataWatch(constants.WORKER_QUEUE_TEMPLATE.format(worker_id=self.worker_id))
     def switch_queue(self, data, status):
         """
         Zookeeper callback reacting on notification to switch queue
@@ -212,11 +217,14 @@ class Worker(object):
         """
         queue = data.decode('utf-8')
         if queue != self.queue:
+            # TODO - move this to processing
             self.stop_processing()
             self.update_queue(queue)
-            self.start_processing()
+            # TODO
+            # update config
+            #self.start_processing()
+            self.mq_queue_setup()
     
-    @zk.DataWatch(constants.WORKER_ENABLED_TEMPLATE.format(worker_id=self.worker_id))
     def shutdown(self, data, status):
         """
         Shutdown the worker if set to disabled state.
@@ -246,7 +254,7 @@ class Worker(object):
         :raise: ZookeeperError if zookeeper returns non zero error code
         """
         try:
-            self.broker_servers = self.zk.get_children(
+            self.mq_servers = self.zk.get_children(
                 constants.WORKER_CONFIG_MQ_SERVERS)[0].decode('utf-8')
         except zk_exceptions.NoNodeError:
             logger.error('Failed to obtain MQ server list')
@@ -272,7 +280,7 @@ class Worker(object):
         :raise: ZookeeperError if server returns non zero value
         """
         self.queue = queue
-        self.zk.set(constants.WORKER_QUEUE_TEMPLATE.format(worker_id = worker_id), self.queue.encode('utf-8'))
+        self.zk.set(constants.WORKER_QUEUE_TEMPLATE.format(worker_id = self.worker_id), self.queue.encode('utf-8'))
     
     def init_worker_status(self):
         """
@@ -332,30 +340,37 @@ class Worker(object):
         
         if self.mq_connection and self.mq_connection.is_open:
             self.mq_connection.close()
+            self.mq_connection.ioloop.stop()
     
     def mq_connect(self):
         """
         Connect to message broker
         """
-        # TODO - try all servers!
-        self._mq_server = self.broker_servers[0]
+        # TODO
+        # try all servers
+        # add port configuration
+        self.mq_server = self.mq_servers[0]
         self.mq_connection = pika.SelectConnection(
-            parameters = pika.ConnectionParameters(
-                host=self._mq_server[0],
-                port=self._mq_server[1]
+            pika.ConnectionParameters(
+                host=self.mq_server,
             ),
             on_open_callback=self.mq_channel_create,
             on_open_error_callback=self.mq_connection_open_error,
             on_close_callback=self.mq_connection_close
         )
     
-    def mq_connection_open_error(self, connection):
+    def mq_connection_open_error(self, connection, error):
         """
         Set worker status to failed - connection to broker failed to open.
         :param connection: broker connection - same as self.mq_connection
+        :param error: exception generated on close
         """
         logger.error('Connection to message broker failed!')
+        logger.error(traceback.format_exc())
         self.update_status(constants.STATUS_FAILED)
+        # TODO
+        # reconnect
+        self.mq_connection.ioloop.stop()
     
     def mq_connection_close(self, connection, reason):
         """
@@ -387,10 +402,13 @@ class Worker(object):
         """
         Setup parameters for input queue
         """
+        if not self.channel or not self.channel.is_open:
+            return
+
         # register callback for data processing
-        channel.basic_consume(
+        self.channel.basic_consume(
             self.queue,
-            self.process_request,
+            self.mq_process_request,
             consumer_tag = self.worker_id
         )
     
@@ -527,12 +545,17 @@ class Worker(object):
         Stops processing of current queue.
         Runs only if channel is open.
         """
-        if self.channel.is_open:
-            try:
-                self.channel.cancel(self.worker_id)
-            except ValueError:
-                # worker was not processing
-                pass
+        if not self.channel:
+            return
+        
+        if not self.channel.is_open:
+            return
+
+        try:
+            self.channel.basic_cancel(self.worker_id)
+        except ValueError:
+            # worker was not processing
+            pass
     
     def run(self):
         """
@@ -549,6 +572,7 @@ class Worker(object):
         # generate id
         if not self.worker_id:
             self.gen_id()
+        logger.info('Worker id: {}'.format(self.worker_id))
 
         # initialize worker status and sync with zookeeper
         try:            
@@ -566,8 +590,17 @@ class Worker(object):
             self.tmp_directory = f'/tmp/pero-worker-{self.worker_id}'
         self.create_tmp_dir()
 
-        # zookeeper callbacks
-        # callbacks are added on object creation - this section is empty
+        # register zookeeper callbacks:
+        # switch queue callback
+        self.zk.DataWatch(
+            path=constants.WORKER_QUEUE_TEMPLATE.format(worker_id=self.worker_id),
+            func=self.switch_queue
+        )
+        # shutdown callback
+        self.zk.DataWatch(
+            path=constants.WORKER_ENABLED_TEMPLATE.format(worker_id=self.worker_id),
+            func=self.shutdown
+        )
 
         # load config if recovering worker
         if self.queue:
@@ -586,11 +619,19 @@ class Worker(object):
             logger.critical(traceback.format_exc())
             return 1
 
+        if self.queue:
+            self.update_status(constants.STATUS_PROCESSING)
+        else:
+            self.update_status(constants.STATUS_IDLE)
+
         # start processing queue
         try:
             # uses this thread for managing the MQ connection
             # until the connection is closed
             self.mq_connection.ioloop.start()
+        except KeyboardInterrupt:
+            logger.info('Shutdown signal received!')
+            self.mq_disconnect()
         except Exception:
             logger.critical('Connection to message broker failed!')
             logger.critical(traceback.format_exc())
@@ -601,11 +642,11 @@ class Worker(object):
 def main():
     args = parse_args()
 
-    zk_servers = zkf.zk_server_list(args.zookeeper_servers)
+    zk_servers = zkf.zk_server_list(args.zookeeper)
 
     worker = Worker(
         zookeeper_servers=zk_servers,
-        broker_servers=args.broker_servers,
+        mq_servers=args.broker_servers,
         tmp_directory=args.tmp_directory if args.tmp_directory else None
     )
 
