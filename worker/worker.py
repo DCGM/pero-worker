@@ -485,7 +485,8 @@ class Worker(object):
         page_parser = PageParser(self.config, self.ocr)  # TODO - move pageparser to load config
         try:
             if xml_in:
-                page_layout = PageLayout().from_pagexml_string(xml_in)
+                page_layout = PageLayout()
+                page_layout.from_pagexml_string(xml_in)
             else:
                 page_layout = PageLayout(id=processing_request.page_uuid, page_size=(img.shape[0], img.shape[1]))
             if logits_in:
