@@ -61,6 +61,7 @@ def parse_args():
     parser.add_argument(
         '--shutdown', '-d',
         help='Shutdown worker with given id.',
+        nargs='+'
     )
     parser.add_argument(
         '--remove', '-r',
@@ -202,11 +203,12 @@ def main():
 
     # shutdown worker
     if args.shutdown:
-        try:
-            shutdown_worker(zk, args.shutdown)
-        except Exception as e:
-            logger.error('Failed to shutdown worker {}!'.format(args.shutdown))
-            logger.error('Received error message: {}'.format(e))
+        for worker in args.shutdown:
+            try:
+                shutdown_worker(zk, worker)
+            except Exception as e:
+                logger.error('Failed to shutdown worker {}!'.format(args.shutdown))
+                logger.error('Received error message: {}'.format(e))
     
     # remove worker from zookeeper
     if args.remove:

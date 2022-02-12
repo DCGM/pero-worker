@@ -476,14 +476,14 @@ class Worker(object):
             logger.debug(f'File: {data.name}, type: {datatype}')
             if datatype.split('/')[0] == 'image':  # recognize image
                 img = cv2.imdecode(np.fromstring(processing_request.results[i].content, dtype=np.uint8), 1)
-            if ext == 'xml':  # pagexml is missing xml header - type can't be recognized - type = text/plain
-                xml_in = processing_request.results[i].content.decode('utf-8')
-            if ext == 'logits':  # type = application/octet-stream
+            if ext == '.xml':  # pagexml is missing xml header - type can't be recognized - type = text/plain
+                xml_in = processing_request.results[i].content
+            if ext == '.logits':  # type = application/octet-stream
                 logits_in = processing_request.results[i].content
         
         # run processing
+        page_parser = PageParser(self.config, self.ocr)  # TODO - move pageparser to load config
         try:
-            page_parser = PageParser(self.config, self.ocr)  # TODO - move pageparser to load config
             if xml_in:
                 page_layout = PageLayout().from_pagexml_string(xml_in)
             else:
@@ -500,13 +500,16 @@ class Worker(object):
         
         # save output
         xml_out = page_layout.to_pagexml_string()
-        logits_out = page_layout.save_logits_bytes()
+        try:
+            logits_out = page_layout.save_logits_bytes()
+        except Exception:
+            logits_out = None
 
         for data in processing_request.results:
             ext = os.path.splitext(data.name)[1]
-            if ext == 'xml':
+            if ext == '.xml':
                 data.content = xml_out.encode('utf-8')
-            if ext == 'logits':
+            if ext == '.logits':
                 data.content = logits_out
         
         if xml_out and not xml_in:
