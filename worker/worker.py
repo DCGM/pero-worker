@@ -4,7 +4,7 @@
 
 import pika  # AMQP protocol library for queues
 import logging
-import time
+#import time
 import sys
 import os  # filesystem
 import argparse
@@ -39,14 +39,8 @@ import worker_functions.zk_functions as zkf
 
 # === Global config ===
 
-# global variables
-worker_id = None  # id to identify worker instance
-tmp_folder = None  # folder where to store temporary files
-config = None  # configuration for the page parser
-ocr_path = None  # Path to folder with config and OCR data
-
 # setup logging (required by kazoo)
-log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+log_formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
 
 stderr_handler = logging.StreamHandler()
 stderr_handler.setFormatter(log_formatter)
@@ -104,409 +98,570 @@ def parse_args():
     )
     argparser.add_argument(
         '--ocr',
-        help='Folder with OCR data and config file in .ini format',
+        help='Directory with OCR data and config file in .ini format',
         type=dir_path
     )
     argparser.add_argument(
-        '--tmp-folder',
-        help='Path to folder where temporary files will be stored',
+        '--tmp-directory',
+        help='Path to directory where temporary files will be stored',
         type=dir_path
     )
     return argparser.parse_args()
 
-def clean_tmp_files(path):
+class Worker(object):
     """
-    Removes temporary files and directories recursively
-    :param path: path to file/folder to clean up
+    Pero processing worker
     """
-    # path is not valid
-    if not path or not os.path.exists(path):
-        return
+
+    def __init__(self, zookeeper_servers, mq_servers = [], worker_id = None, tmp_directory = None, enabled = True):
+        """
+        Initialize worker
+        :param worker_id: worker identifier
+        :param tmp_directory: path to temporary directory
+        """
+
+        # worker configuration
+        self.worker_id = worker_id
+        self.tmp_directory = tmp_directory
+        self.zookeeper_servers = zookeeper_servers
+        self.mq_servers = mq_servers
+
+        # configuration for the page parser and selected orc
+        self.config = None
+        self.ocr = None
+
+        # worker connections
+        self.channel = None
+        self.mq_connection = None
+        self.zk = None
+
+        # selected broker server
+        self.mq_server = None
+
+        # worker status
+        self.status = constants.STATUS_DEAD
+        self.queue = None
+        self.active_queue = None
+        self.enabled = enabled
+
+    def clean_tmp_files(self, path=None):
+        """
+        Removes temporary files and directories recursively
+        :param path: path to file/directory to clean up
+        """
+        # default path = temp directory
+        if not path:
+            path = self.tmp_directory
+        
+        # path is not valid
+        if not os.path.exists(path):
+            return
+        
+        # remove temp file
+        if os.path.isfile(path):
+            os.unlink(path)
+            return
+        
+        # clean files from temp directory
+        for file in os.listdir(path):
+            clean_tmp_files(path)
+        
+        # remove temp direcotry
+        os.rmdir(path)
+
+    def __del__(self):
+        """
+        Cleans up connections and temporary files before worker stops
+        """
+        logger.info('Closing connection and cleaning up')
+        self.update_status(constants.STATUS_DEAD)
+        self.mq_disconnect()
+        self.zk_disconnect()
+        self.clean_tmp_files()
+
+        # TODO - test if needed - loop should be running in run() function
+        # wait for connection to broker to close
+        #self.mq_connection.ioloop.start()
     
-    # remove temp file
-    if os.path.isfile(path):
-        os.unlink(path)
-        return
+    def zk_disconnect(self):
+        """
+        Disconnects from zookeeper
+        """
+        if self.zk and self.zk.connected:
+            self.zk.stop()
+            self.zk.close()
+
+    def zk_connect(self):
+        """
+        Connects worker to the zookeeper
+        """
+
+        # skip if connection if active
+        if self.zk and self.zk.connected:
+            return
+
+        # create new connection
+        self.zk = KazooClient(hosts=self.zookeeper_servers)
+
+        try:
+            self.zk.start(timeout=20)
+        except KazooTimeoutError:
+            logger.error('Zookeeper connection timeout!')
+            raise
     
-    # clean files from temp directory
-    for file in os.listdir(path):
-        clean_tmp_files(path)
+    def switch_queue(self, data, status):
+        """
+        Zookeeper callback reacting on notification to switch queue
+        :param data: new queue name as byte string
+        :param status: status of the zookeeper queue node
+        """
+        queue = data.decode('utf-8')
+        if queue != self.queue:
+            # TODO - move this to processing
+            self.stop_processing()
+            self.update_queue(queue)
+            # TODO
+            # update config
+            #self.start_processing()
+            self.mq_queue_setup()
     
-    # remove temp direcotry
-    os.rmdir(path)
-
-def clean_up(zk, channel, tmp):
-    """
-    Cleans up connections and temporary files before worker stops
-    :param zk: zookeeper connection
-    :param channel: mq channel
-    :tmp: temporary files path
-    """
-    if zk and zk.connected:
-        zk.stop()
-        zk.close()
+    def shutdown(self, data, status):
+        """
+        Shutdown the worker if set to disabled state.
+        :param async_object: zookeeper object passed into callback
+        """
+        enabled = data.decode('utf-8').lower()
+        if enabled != 'true':
+            self.mq_disconnect()
     
-    if channel and channel.is_open:
-        channel.close()
+    def gen_id(self):
+        """
+        Generate new id for the worker
+        :raise: ZookeeperError if zookeeper returns non zero error code
+        """
+        self.worker_id = uuid.uuid4().hex
+
+        # check for conflicts in zookeeper clients
+        while self.zk.exists(
+            constants.WORKER_STATUS_ID_TEMPLATE.format(
+            worker_id = self.worker_id
+        )):
+            self.worker_id = uuid.uuid4().hex
     
-    clean_tmp_files(tmp)
-
-# === OCR Functions ===
-
-def ocr_test_process_request(processing_request, worker_id):
-    """
-    Test method to check if commuincation is working
-    :param processing_request: processing request to work on
-    :param worker_id: id of the worker
-    :return: processing status
-    """
-    # Gen log
-    log = processing_request.logs.add()
-    log.host_id = worker_id
-    log.stage = processing_request.processing_stages[0]
-    logger.debug(f'Stage: {processing_request.processing_stages[0]}')
-    logger.debug(f'Log avaliable for: {log.stage}')
-    Timestamp.GetCurrentTime(log.start)
-
-    # Save image
-    for result in processing_request.results:
-        with open(f'/home/pavel/skola/bakalarka/temp/worker/{result.name}', 'wb') as img:
-            img.write(result.content)
-            log.status = "OK"
+    def get_mq_servers(self):
+        """
+        Updates list of message broker servers
+        :raise: ZookeeperError if zookeeper returns non zero error code
+        """
+        try:
+            self.mq_servers = self.zk.get_children(
+                constants.WORKER_CONFIG_MQ_SERVERS)[0].decode('utf-8')
+        except zk_exceptions.NoNodeError:
+            logger.error('Failed to obtain MQ server list')
     
-    if not log.status:
-        log.status = "NOK"
+    def update_status(self, status):
+        """
+        Updates worker status
+        :param status: new status
+        :raise: NoNodeError if status node path is not initialized
+        :raise: ZookeeperError if server returns non zero value
+        """
+        self.status = status
+        self.zk.set(constants.WORKER_STATUS_TEMPLATE.format(
+            worker_id = self.worker_id),
+            self.status.encode('utf-8')
+        )
 
-    Timestamp.GetCurrentTime(log.end)
-    log.log = "Lorem Ipsum"
+    def update_queue(self, queue):
+        """
+        Updates processed queue
+        :param queue: new queue to process
+        :raise: NoNodeError if status node path is not initialized
+        :raise: ZookeeperError if server returns non zero value
+        """
+        self.queue = queue
+        self.zk.set(constants.WORKER_QUEUE_TEMPLATE.format(worker_id = self.worker_id), self.queue.encode('utf-8'))
     
-    return True
-
-def ocr_process_request(processing_request, worker_id, config, ocr_path):
-    """
-    Process processing request using OCR
-    :param processing_request: processing request to work on
-    :param worker_id: id of this worker
-    :param config: configuration for OCR
-    :param ocr_path: path to OCR data
-    :return: processing status
-    """
-    # Gen log
-    log = processing_request.logs.add()
-    log.host_id = worker_id
-    log.stage = processing_request.processing_stages[0]
-    logger.debug(f'Stage: {log.stage}')
-    Timestamp.GetCurrentTime(log.start)
-
-    # Load data
-    img = None
-    xml_in = None
-    logits_in = None
-
-    for i, data in enumerate(processing_request.results):
-        ext = os.path.splitext(data.name)[1]
-        datatype = magic.from_buffer(data.content, mime=True)
-        logger.debug(f'File: {data.name}, type: {datatype}')
-        if datatype.split('/')[0] == 'image':  # recognize image
-            img = cv2.imdecode(np.fromstring(processing_request.results[i].content, dtype=np.uint8), 1)
-        if ext == '.xml':  # pagexml is missing xml header - type can't be recognized - type = text/plain
-            xml_in = processing_request.results[i].content
-        if ext == '.logits':  # type = application/octet-stream
-            logits_in = processing_request.results[i].content
+    def init_worker_status(self):
+        """
+        Initializes state of worker in zookeeper
+        :raise: NodeExistsError if worker with this id is already defined in zookeeper
+        :raise: ZookeeperError if server returns non zero value
+        """
+        # set worker id
+        self.zk.create(
+            constants.WORKER_STATUS_TEMPLATE.format(
+                worker_id = self.worker_id
+            ),
+            self.status.encode('utf-8'),
+            makepath=True
+        )
+        # set worker queue
+        self.zk.create(constants.WORKER_QUEUE_TEMPLATE.format(
+            worker_id = self.worker_id
+        ))
+        #set if worker is enabled or disabled
+        self.zk.create(constants.WORKER_ENABLED_TEMPLATE.format(
+            worker_id = self.worker_id
+        ), 'true'.encode('utf-8'))
     
-    # Run processing
-    page_parser = PageParser(config, ocr_path)  # TODO - init ocr when input queue is selected (usign zk)!
-    if xml_in:
-        logger.debug('Loading page layout from xml')
-        page_layout = PageLayout()
-        page_layout.from_pagexml_string(xml_in)
-    else:
-        logger.debug('Creating new page layout')
-        page_layout = PageLayout(id=processing_request.page_uuid, page_size=(img.shape[0], img.shape[1]))
-    if logits_in:
-        logger.debug('Loading logits')
-        page_layout.load_logits(logits_in)
-    page_layout = page_parser.process_page(img, page_layout)
+    def recover_status(self):
+        """
+        Recovers worker to previous state after reconnecting to zookeeper
+        :raise: ZookeeperError if server returns non zero value
+        """
+        update_status(constants.STATUS_STARTING)
+        self.queue = self.zk.get(constants.WORKER_QUEUE_TEMPLATE.format(
+            worker_id = self.worker_id
+        )).decode('utf-8')
+        self.enabled = self.zk.get(constatns.WORKER_ENABLED_TEMPLATE.format(
+            worker_id = self.worker_id
+        )).decode('utf-8')
     
-    # Save output
-    xml_out = page_layout.to_pagexml_string()
-    try:
-        logits_out = page_layout.save_logits_bytes()
-    except Exception:
-        logits_out = None
-
-    for data in processing_request.results:
-        ext = os.path.splitext(data.name)[1]
-        if ext == '.xml':
-            data.content = xml_out.encode('utf-8')
-        if ext == '.logits':
-            if logits_out:
-                data.content = logits_out
+    def create_tmp_dir(self):
+        """
+        Creates tmp directory
+        """
+        if not self.tmp_directory:
+            return
+        
+        if os.path.isdir(self.tmp_directory):
+            return
+        
+        os.makedirs(self.tmp_directory)
     
-    if xml_out and not xml_in:
-        xml = processing_request.results.add()
-        xml.name = 'page.xml'
-        xml.content = xml_out.encode('utf-8')
+    def mq_disconnect(self):
+        """
+        Stops connection to message broker
+        """
+        if self.channel and self.channel.is_open:
+            self.stop_processing()
+            self.channel.close()
+        
+        if self.mq_connection and self.mq_connection.is_open:
+            self.mq_connection.close()
+            self.mq_connection.ioloop.stop()
     
-    if logits_out and not logits_in:
-        logits = processing_request.results.add()
-        logits.name = 'page.logits'
-        logits.content = logits_out
-    
-    # Log end of processing
-    Timestamp.GetCurrentTime(log.end)
-    # TODO - log content
-    #log.log = "Lorem Ipsum"
-
-    return True
-
-
-# === Zookeeper Functions ===
-
-def zk_gen_id(zk):
-    """
-    Generate new id for the worker
-    :param zk: active zookeeper connection
-    :return: worker id
-    """
-    worker_id = uuid.uuid4().hex
-
-    # check for conflicts in zookeeper clients
-    while zk.exists(f'/pero/worker/{worker_id}'):
-        worker_id = uuid.uuid4().hex
-
-    return worker_id
-
-def zk_get_mq_servers(zk):
-    """
-    Returns list of message broker servers obtained from zookeeper
-    :param zk: zookeeper connection
-    :return: list of message broker servers
-    """
-    try:
-        mq_servers = zk.get_children(constants.WORKER_CONFIG_MQ_SERVERS)[0].decode('utf-8')
-    except zk_exceptions.NoNodeError:
-        logger.debug('Failed to get MQ server addresses.')
-        mq_servers = []
-    
-    return mq_servers
-
-def zk_set_status(zk, worker_id, status):
-    """
-    Set worker status in zookeeper
-    :param zk: zookeeper connection
-    :param worker_id: id of the worker
-    :param status: status to set
-    :raise: NoNodeError if status node path is not initialized
-    :raise: ZookeeperError if server returns non zero value
-    """
-    zk.set(constants.WORKER_STATUS_TEMPLATE.format(worker_id = worker_id), status.encode('UTF-8'))
-
-def zk_set_queue(zk, worker_id, queue):
-    """
-    Set queue that is beeing processed by worker in zookeeper
-    :param zk: zookeeper connection
-    :param worker_id: id of the worker
-    :param queue: queue to set
-    :raise: NoNodeError if queue node path is not initialized
-    :raise: ZookeeperError if server returns non zero error code
-    """
-    zk.set(constants.WORKER_QUEUE_TEMPLATE.format(worker_id = worker_id), queue.encode('UTF-8'))
-
-def zk_worker_init(zk, worker_id):
-    """
-    Initializes state of worker in zookeeper
-    :param zk: zookeeper connection
-    :param worker_id: id of the worker
-    :raise: NodeExistsError if worker with this id is already defined in zookeeper
-    :raise: ZookeeperError if server returns non zero value
-    """
-    zk.create(constants.WORKER_STATUS_TEMPLATE.format(worker_id=worker_id), constants.STATUS_STARTING.encode('UTF-8'), makepath=True)
-    zk.create(constants.WORKER_QUEUE_TEMPLATE.format(worker_id=worker_id))
-    zk.create(constants.WORKER_ENABLED_TEMPLATE.format(worker_id=worker_id), 'True'.encode('UTF-8'))
-
-# === Message Broker Functions ===
-
-def mq_process_request(channel, method, properties, body):
-    """
-    Callback function for processing messages received from message broker channel
-    :param channel: channel from which the message is originated
-    :param method: message delivery method
-    :param properties: additional message properties
-    :param body: message body (actual processing request)
-    :raise: ValueError if output queue is not declared on broker
-    """
-    global worker_id
-    global tmp_folder
-    global config
-    global ocr_path
-
-    processing_request = ProcessingRequest().FromString(body)
-    current_stage = processing_request.processing_stages[0]
-    logger.info(f'Processing request: {processing_request.uuid}')
-    logger.debug(f'Request stage: {current_stage}')
-
-    status = ocr_process_request(processing_request, worker_id, config, ocr_path)
-    processing_request.processing_stages.pop(0)
-    next_stage = processing_request.processing_stages[0]
-    
-    # acknowledge the request after successfull processing
-    if status:
+    def mq_connect(self):
+        """
+        Connect to message broker
+        """
         # TODO
-        # send message to output channel
+        # try all servers
+        # add port configuration
+        self.mq_server = self.mq_servers[0]
+        self.mq_connection = pika.SelectConnection(
+            pika.ConnectionParameters(
+                host=self.mq_server,
+            ),
+            on_open_callback=self.mq_channel_create,
+            on_open_error_callback=self.mq_connection_open_error,
+            on_close_callback=self.mq_connection_close
+        )
+    
+    def mq_connection_open_error(self, connection, error):
+        """
+        Set worker status to failed - connection to broker failed to open.
+        :param connection: broker connection - same as self.mq_connection
+        :param error: exception generated on close
+        """
+        logger.error('Connection to message broker failed!')
+        logger.error(traceback.format_exc())
+        self.update_status(constants.STATUS_FAILED)
+        # TODO
+        # reconnect
+        self.mq_connection.ioloop.stop()
+    
+    def mq_connection_close(self, connection, reason):
+        """
+        Set worker status based on connection.
+        :param connection: broker connection - same as self.mq_connection
+        :param reason: reason why was connection closed
+        """
+        logger.warning('Connection to message broker closed, reason: {}'.format(reason))
+        self.update_status(constants.STATUS_DEAD)  # TODO - report status
+
+    def mq_channel_create(self, connection):
+        """
+        Create broker channel
+        :param connection: broker connection - same as self.mq_connection
+        """
+        self.mq_connection.channel(on_open_callback=self.mq_channel_setup)
+
+    def mq_channel_setup(self, channel):
+        """
+        Setup parameters for message broker channel
+        :param channel: Created channel object
+        """
+        self.channel = channel
+
+        # set number of prefetched messages
+        self.channel.basic_qos(prefetch_count=5)
+    
+    def mq_queue_setup(self):
+        """
+        Setup parameters for input queue
+        """
+        if not self.channel or not self.channel.is_open:
+            return
+
+        # register callback for data processing
+        self.channel.basic_consume(
+            self.queue,
+            self.mq_process_request,
+            consumer_tag = self.worker_id
+        )
+    
+    def mq_process_request(self, channel, method, properties, body):
+        """
+        Callback function for processing messages received from message broker channel
+        :param channel: channel from which the message is originated
+        :param method: message delivery method
+        :param properties: additional message properties
+        :param body: message body (actual processing request)
+        :raise: ValueError if output queue is not declared on broker
+        """
+        processing_request = ProcessingRequest().FromString(body)
+        current_stage = processing_request.processing_stages[0]
+
+        logger.info(f'Processing request: {processing_request.uuid}')
+        logger.debug(f'Request stage: {current_stage}')
+        try:
+            self.ocr_process_request(processing_request)
+        except RuntimeError as e:
+            # Processing failed - send message to output queue, no further processing is possible
+            logger.error('Failed to process request! Received error: {error}'.format(error=e))
+            output_stage = processing_request.processing_stages[-1]
+            channel.basic_publish('', output_stage, processing_request.SerializeToString())
+        except Exception:
+            logger.error('Failed to process request {request_id} using stage {stage}!'.format(
+                request_id = processing_request.uuid,
+                stage = current_stage
+            ))
+            logger.error(traceback.format_exc())
+            channel.basic_nack(delivery_tag = method.delivery_tag)
+        
+        processing_request.processing_stages.pop(0)
+        next_stage = processing_request.processing_stages[0]
+        
+        # send request to output queue and
+        # acknowledge the request after successfull processing
+        # TODO
+        # add validation if message was received by mq
         channel.basic_publish('', next_stage, processing_request.SerializeToString())
         channel.basic_ack(delivery_tag = method.delivery_tag)
-    # reject request on failure and disconnect from queue
-    else:
-        channel.basic_cancel(consumer_tag = worker_id)
 
-def mq_connect(broker):
-    """
-    Connect to message broker
-    :param broker: broker to connect to
-    :return: AMQP channel to given broker
-    :raise: pika.exceptions.ConnectionBlockedTimeout if connection fails to establish
-    """
-    # connect
-    connection = pika.BlockingConnection(pika.ConnectionParameters(host=broker))
-    return connection.channel()
+    def ocr_process_request(self, processing_request):
+        """
+        Process processing request using OCR
+        :param processing_request: processing request to work on
+        :return: processing status
+        """
+        # TODO
+        # add logger output to message log
+        # gen log
+        log = processing_request.logs.add()
+        log.host_id = self.worker_id
+        log.stage = processing_request.processing_stages[0]
+        Timestamp.GetCurrentTime(log.start)
 
-def mq_queue_input_setup(channel, queue, worker_id):
-    """
-    Setup parameters for input queue on channel
-    :param channel: channel to connected broker
-    :param queue: queue to get messages from
-    :param worker_id: id of this worker
-    :raise: pika.exceptions.ChannelClosedByBroker if queue is not declared on broker
-    """
-    # set prefetch length for this consumer
-    channel.basic_qos(prefetch_count=5)
+        # load data
+        img = None
+        xml_in = None
+        logits_in = None
 
-    # register callback for data processing
-    channel.basic_consume(queue, mq_process_request, consumer_tag = worker_id)
+        for i, data in enumerate(processing_request.results):
+            ext = os.path.splitext(data.name)[1]
+            datatype = magic.from_buffer(data.content, mime=True)
+            logger.debug(f'File: {data.name}, type: {datatype}')
+            if datatype.split('/')[0] == 'image':  # recognize image
+                img = cv2.imdecode(np.fromstring(processing_request.results[i].content, dtype=np.uint8), 1)
+            if ext == '.xml':  # pagexml is missing xml header - type can't be recognized - type = text/plain
+                xml_in = processing_request.results[i].content
+            if ext == '.logits':  # type = application/octet-stream
+                logits_in = processing_request.results[i].content
+        
+        # run processing
+        page_parser = PageParser(self.config, self.ocr)  # TODO - move pageparser to load config
+        try:
+            if xml_in:
+                page_layout = PageLayout()
+                page_layout.from_pagexml_string(xml_in)
+            else:
+                page_layout = PageLayout(id=processing_request.page_uuid, page_size=(img.shape[0], img.shape[1]))
+            if logits_in:
+                page_layout.load_logits(logits_in)
+            page_layout = page_parser.process_page(img, page_layout)
+        except Exception as e:
+            # processing failed
+            log.log += '{error}\n'.format(error = e)
+            log.log += traceback.format_exc()
+            Timestamp.GetCurrentTime(log.end)
+            raise RuntimeError('{error}'.format(error = e))
+        
+        # save output
+        xml_out = page_layout.to_pagexml_string()
+        try:
+            logits_out = page_layout.save_logits_bytes()
+        except Exception:
+            logits_out = None
 
+        for data in processing_request.results:
+            ext = os.path.splitext(data.name)[1]
+            if ext == '.xml':
+                data.content = xml_out.encode('utf-8')
+            if ext == '.logits':
+                data.content = logits_out
+        
+        if xml_out and not xml_in:
+            xml = processing_request.results.add()
+            xml.name = 'page.xml'
+            xml.content = xml_out.encode('utf-8')
+        
+        if logits_out and not logits_in:
+            logits = processing_request.results.add()
+            logits.name = 'page.logits'
+            logits.content = logits_out
+        
+        # log end of processing
+        Timestamp.GetCurrentTime(log.end)
+        # TODO - log content
+        #log.log = "Lorem Ipsum"
 
-# === Main ===
+    def ocr_config_load(self, config):
+        """
+        Loads ocr config
+        :param config: config name
+        """
+        # TODO
+        pass
+
+    def ocr_load(self, location):
+        """
+        Loads ocr data from given location
+        :param location: location of the data
+        """
+        # TODO
+        pass
+    
+    def stop_processing(self):
+        """
+        Stops processing of current queue.
+        Runs only if channel is open.
+        """
+        if not self.channel:
+            return
+        
+        if not self.channel.is_open:
+            return
+
+        try:
+            self.channel.basic_cancel(self.worker_id)
+        except ValueError:
+            # worker was not processing
+            pass
+    
+    def run(self):
+        """
+        Start the worker
+        """
+        # connect to the zookeeper
+        try:
+            self.zk_connect()
+        except KazooTimeoutError:
+            logger.critical('Failed to connect to zookeeper!')
+            logger.critical('Initialization aboarded!')
+            return 1
+        
+        # generate id
+        if not self.worker_id:
+            self.gen_id()
+        logger.info('Worker id: {}'.format(self.worker_id))
+
+        # initialize worker status and sync with zookeeper
+        try:            
+            self.init_worker_status()
+        except zk_exceptions.NodeExistsError:
+            logger.info('Recovering failed node!')
+            try:
+                self.recover_status()
+            except:
+                logger.critical('Setting up zookeeper status failed!')
+                return 1
+        
+        # setup tmp directory
+        if not self.tmp_directory:
+            self.tmp_directory = f'/tmp/pero-worker-{self.worker_id}'
+        self.create_tmp_dir()
+
+        # register zookeeper callbacks:
+        # switch queue callback
+        self.zk.DataWatch(
+            path=constants.WORKER_QUEUE_TEMPLATE.format(worker_id=self.worker_id),
+            func=self.switch_queue
+        )
+        # shutdown callback
+        self.zk.DataWatch(
+            path=constants.WORKER_ENABLED_TEMPLATE.format(worker_id=self.worker_id),
+            func=self.shutdown
+        )
+
+        # load config if recovering worker
+        if self.queue:
+            pass
+            # TODO
+            # load config
+
+            # TODO
+            # Load OCR
+        
+        # setup MQ connection and channel
+        try:
+            self.mq_connect()
+        except Exception:
+            logger.critical('Failed to connect to message broker servers!')
+            logger.critical(traceback.format_exc())
+            return 1
+
+        if self.queue:
+            self.update_status(constants.STATUS_PROCESSING)
+        else:
+            self.update_status(constants.STATUS_IDLE)
+
+        # start processing queue
+        try:
+            # uses this thread for managing the MQ connection
+            # until the connection is closed
+            self.mq_connection.ioloop.start()
+        except KeyboardInterrupt:
+            logger.info('Shutdown signal received!')
+            self.mq_disconnect()
+        except Exception:
+            logger.critical('Connection to message broker failed!')
+            logger.critical(traceback.format_exc())
+            return 1
+        
+        return 0
 
 def main():
-    # global vars:
-    global worker_id
-    global tmp_folder
-    global config
-    global ocr_path
-
-    # get commandline arguments
     args = parse_args()
 
-    # connect to zookeeper
-    zookeeper_servers = zkf.zk_server_list(args.zookeeper)
-    if args.zookeeper_list:
-        zookeeper_servers = zkf.zk_server_list(args.zookeeper_list)
+    zk_servers = zkf.zk_server_list(args.zookeeper)
 
-    zk = KazooClient(hosts=zookeeper_servers)
-    
-    try:
-        zk.start(timeout=20)
-    except KazooTimeoutError:
-        logger.critical('Zookeeper connection timeout!')
-        return 1
+    worker = Worker(
+        zookeeper_servers=zk_servers,
+        mq_servers=args.broker_servers,
+        tmp_directory=args.tmp_directory if args.tmp_directory else None
+    )
 
-    # get configurations from zookeeper
-    try:
-        # TODO
-        #broker_servers = zk_get_mq_servers(zk)
-        broker_servers = args.broker_servers
-    except KazooTimeoutError as e:
-        logger.critical('Zookeeper connection failed!')
-        logger.critical(traceback.format_exc())
-        clean_up(zk, None, tmp_folder)
-        return 1
+    # TODO
+    # remove when config loading is done
+    worker.config = configparser.ConfigParser()
+    worker.config.read(os.path.join(args.ocr, 'config.ini'))
+    worker.ocr = args.ocr
 
-    # generate worker id
-    try:
-        worker_id = zk_gen_id(zk) if not args.id else args.id
-    except zk_exceptions.ZookeeperError:
-        logger.critical('Failed to check worker id in zookeeper!')
-        logger.critical(traceback.format_exc())
-        clean_up(zk, None, tmp_folder)
-        return 1
-    logger.info(f'Worker ID: {worker_id}')
+    return worker.run()
 
-    # set zookeeper status
-    try:
-        zk_worker_init(zk, worker_id)
-    except zk_exceptions.NodeExistsError:
-        logger.error('Worker configuration found in zookeeper! Recovering node.')
-    except Exception:
-        logger.critical('Worker registration in zookeeper failed!')
-        logger.critical(traceback.format_exc())
-        clean_up(zk, None, tmp_folder)
-        return 1
-
-    # setup folder for temporary data
-    tmp_folder = args.tmp_folder if args.tmp_folder else f'/tmp/pero-worker-{worker_id}'
-    if not os.path.isdir(tmp_folder):
-        os.makedirs(tmp_folder)
-    
-    # load OCR config
-    config = configparser.ConfigParser()
-    config.read(os.path.join(args.ocr, 'config.ini'))
-    ocr_path = args.ocr
-
-    # get channel to message broker
-    for broker in broker_servers:
-        channel = mq_connect(broker)
-        if channel:
-            break
-    
-    if not channel:
-        logger.error(f'Failed to connect to the message broker {broker}!')
-        clean_up(zk, channel, tmp_folder)
-        return 1
-    
-    # setup queue for data receiving
-    try:
-        mq_queue_input_setup(channel, args.queue, worker_id)
-    except pika.exceptions.ChannelClosedByBroker as e:
-        logger.critical(f'Failed to start consuming from queue {args.queue}!')
-        logger.critical('Channel error: {}'.format(e))
-        clean_up(zk, channel, tmp_folder)
-        return 1
-    
-    # set zookeeper status
-    try:
-        zk_set_queue(zk, worker_id, args.queue)
-        zk_set_status(zk, worker_id, constants.STATUS_PROCESSING)
-    except zk_exceptions.ZookeeperError as e:
-        logger.error('Failed to set status in zookeeper!')
-        logger.error('Zookeeper error: {}'.format(e))
-
-    # start processing queue
-    exit_code = 0
-    try:
-        channel.start_consuming()
-    except KeyboardInterrupt:
-        logger.info('Shutdown signal received')
-    except pika.exceptions.ChannelClosed:
-        logger.critical('Channel closed by broker!')
-        logger.critical(traceback.format_exc())
-        exit_code = 1
-    except Exception:
-        logger.critical('Unknown error has occured! Exititng!')
-        logger.critical(traceback.format_exc())
-        exit_code = 1
-    finally:
-        try:  # set status in zookeeper
-            zk_set_status(zk, worker_id, constants.STATUS_FAILED if exit_code else constants.STATUS_DEAD)
-        except Exception as e:
-            logger.error('Failed to set status in zookeeper!')
-            logger.error('Received error: {}'.format(e))
-        logger.info('Closing connections and cleaning up')
-        clean_up(zk, channel, tmp_folder)
-
-    return exit_code
-
-
-# Run
-if __name__ == '__main__':
+# run the module
+if __name__ == "__main__":
     sys.exit(main())
