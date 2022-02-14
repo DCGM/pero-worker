@@ -35,7 +35,7 @@ import kazoo.exceptions as zk_exceptions
 
 # constants
 import worker_functions.constants as constants
-import worker_functions.zk_functions as zkf
+import worker_functions.connection_aux_functions as cf
 
 
 # === Global config ===
@@ -655,7 +655,7 @@ class Worker(object):
 def main():
     args = parse_args()
 
-    zk_servers = zkf.zk_server_list(args.zookeeper)
+    zk_servers = cf.zk_server_list(args.zookeeper)
 
     worker = Worker(
         zookeeper_servers=zk_servers,
