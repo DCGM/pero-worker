@@ -2,6 +2,7 @@
 
 # auxiliary functions for zookeeper
 
+import json # DEBUG
 import ipaddress
 import re
 import logging
@@ -119,6 +120,8 @@ def zk_server_list(servers) -> str:
     # parse servers from file, list or csv string and validate them
     validated_servers = server_list(servers)
     # convert to ip:port format
-    validated_servers = ip_port_to_string(validated_servers)
+    validated_servers = []
+    for server in validated_servers:
+        validated_servers.append(ip_port_to_string(server))
     # join to resulting csv
     return ','.join(validated_servers)
