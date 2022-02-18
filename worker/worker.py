@@ -155,6 +155,10 @@ class Worker(object):
         if not path:
             path = self.tmp_directory
         
+        # if temp directory is not set - nothing to clean
+        if not path:
+            return
+        
         # path is not valid
         if not os.path.exists(path):
             return
@@ -202,8 +206,7 @@ class Worker(object):
         """
         Connects worker to the zookeeper
         """
-
-        # skip if connection if active
+        # skip if connection is active
         if self.zk and self.zk.connected:
             return
 
