@@ -8,7 +8,7 @@ import logging
 import traceback
 
 # aux functions
-import worker_functions.zk_functions as zkf
+import worker_functions.connection_aux_functions as cf
 import worker_functions.constants as constants
 
 # zookeeper
@@ -164,9 +164,9 @@ def main():
     args = parse_args()
 
     # connect to zk
-    zookeeper_servers = zkf.zk_server_list(args.zookeeper)
+    zookeeper_servers = cf.zk_server_list(args.zookeeper)
     if args.zookeeper_list:
-        zookeeper_servers = zkf.zk_server_list(args.zookeeper_list)
+        zookeeper_servers = cf.zk_server_list(args.zookeeper_list)
 
     zk = KazooClient(hosts=zookeeper_servers)
 
