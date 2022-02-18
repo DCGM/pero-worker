@@ -259,6 +259,9 @@ class Publisher:
 
             self.mq_channel.basic_publish('', stages[0], message)
             print('DEBUG: Upload')
+
+            # TODO
+            # check if this runs before or after the callback
             if self.delivery_failed:
                 sys.stderr.write('error: failed to deliver message to the broker!\n')
                 sys.stderr.write(f'error: undelivered file: {os.path.basename(f)}!\n')
