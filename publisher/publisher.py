@@ -279,9 +279,9 @@ def main():
         mq_servers = mq_list(args.mq_list)
 
     # get zookeeper server list
-    zookeeper_servers = zkf.zk_server_list(args.zookeeper)
+    zookeeper_servers = cf.zk_server_list(args.zookeeper)
     if args.zookeeper_list:
-        zookeeper_servers = zkf.zk_server_list(args.zookeeper_list)
+        zookeeper_servers = cf.zk_server_list(args.zookeeper_list)
     
     # get MQ server list from zookeeper
     if not mq_servers:
