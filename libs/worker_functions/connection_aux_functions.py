@@ -107,7 +107,8 @@ def server_list(server_list) -> list:
             server = parse_ip_port(server)
         except ValueError as e:
             logging.error(e)
-        else:  # skip bad server record
+            # skip bad server record
+        else:
             servers.append(server)
     return servers
 
