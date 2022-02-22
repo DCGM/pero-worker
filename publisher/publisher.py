@@ -6,6 +6,10 @@ import sys
 import os
 import argparse
 import traceback
+import logging
+import uuid
+
+# connection auxiliary formating functions
 import worker_functions.connection_aux_functions as cf
 
 # MQ
@@ -18,6 +22,18 @@ from kazoo.handlers.threading import KazooTimeoutError
 # protobuf
 from message_definitions.message_pb2 import ProcessingRequest, StageLog, Data
 from google.protobuf.timestamp_pb2 import Timestamp
+
+# setup logging (required by kazoo)
+log_formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
+
+stderr_handler = logging.StreamHandler()
+stderr_handler.setFormatter(log_formatter)
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+# TODO - remove debug level
+logger.setLevel(logging.DEBUG)
+logger.addHandler(stderr_handler)
 
 def dir_path(path):
     """
@@ -68,7 +84,7 @@ def parse_args():
     parser.add_argument(
         '-i', '--images',
         help='List of images to upload.',
-        type=argparse.FileType('r')
+        nargs='+'
     )
     parser.add_argument(
         '-t', '--stages',
@@ -84,12 +100,12 @@ def parse_args():
     return parser.parse_args()
 
 class Publisher:
-    def __init__(mq_servers):
+    def __init__(self, mq_servers):
         # list of servers to use
         self.mq_servers = mq_servers
         # connection to message broker
-        self.mq_connection
-        self.mq_channel
+        self.mq_connection = None
+        self.mq_channel = None
         # Flag to stop downloading from queue
         self.queue_empty = False
         # Flag to detect delivery failure
@@ -103,7 +119,7 @@ class Publisher:
         """
         for server in self.mq_servers:
             try:
-                logger.info('Connectiong to MQ server {}'.format(self.mq_server))
+                logger.info('Connectiong to MQ server {}'.format(cf.ip_port_to_string(server)))
                 self.mq_connection = pika.BlockingConnection(
                     pika.ConnectionParameters(
                         host=server['ip'],
@@ -118,27 +134,33 @@ class Publisher:
             else:
                 break
     
-    def mq_save_result(self, channel, method, properties, body):
+    def mq_disconnect(self):
+        """
+        Stops connection to message broker
+        """
+        if self.mq_channel and self.mq_channel.is_open:
+            self.mq_channel.close()
+        
+        if self.mq_connection and self.mq_connection.is_open:
+            self.mq_connection.close()
+    
+    def mq_save_result(self, method, properties, body):
         """
         Callback to result to directory.
-        :param channel: MQ channel
         :param method: delivery method
         :param properties: message properties
         :param body: message content
         """
 
-        # check if any message was received
-        if not method.NAME == 'Basic.GetOk':
-            self.queue_empty = True
-
         message = ProcessingRequest().FromString(body)
-        directory = os.path.join(self.directory, message.uuid)
+        directory = os.path.abspath(os.path.join(self.directory, message.uuid))
+        os.mkdir(directory)
 
-        print(f'Downloaded message:')
-        print(f'Message id : {message.uuid}')
-        print(f'Page uuid  : {message.page_uuid}')
+        logger.info(f'Downloaded message:')
+        logger.info(f'Message id : {message.uuid}')
+        logger.info(f'Page uuid  : {message.page_uuid}')
 
-        with open(os.path.join(directory, f'{message.uuid}.info'), 'wb') as info:
+        with open(os.path.join(directory, f'{message.uuid}_info.txt'), 'w') as info:
             info.write(f'Message id : {message.uuid}\n')
             info.write(f'Page uuid  : {message.page_uuid}\n')
             info.write(f'Start time : {message.start_time}\n')
@@ -149,7 +171,7 @@ class Publisher:
             with open(os.path.join(directory, result.name), 'wb') as file:
                 file.write(result.content)
         for log in message.logs:
-            with open(os.path.join(output, f'{log.stage}.log'), 'w') as file:
+            with open(os.path.join(directory, f'{log.stage}.log'), 'w') as file:
                 file.write(f'Host id    : {log.host_id}\n')
                 file.write(f'Stage      : {log.stage}\n')
                 file.write(f'Start time : {log.start}\n')
@@ -157,8 +179,6 @@ class Publisher:
                 file.write(f'Status     : {log.status}\n')
                 file.write('*** Log ***\n')
                 file.write(log.log)
-
-        channel.basic_ack(delivery_tag=method.delivery_tag)
 
     
     def mq_get_results(self, queue, directory):
@@ -168,11 +188,21 @@ class Publisher:
         :param directory: directory where to store downloaded data
         """
         self.directory = directory
-        print('Starting to download messages from queue {}'.format(queue))
+        logger.info('Starting to download messages from queue {}'.format(queue))
+        n_messages = 0
         while True:
-            self.mq_channel.get()
-            if self.queue_empty:
+            method, properties, body = self.mq_channel.basic_get(queue=queue, auto_ack=False)
+            if method == properties == body == None:
+                if n_messages:
+                    logger.info('Number of received messages: {}'.format(n_messages))
+                else:
+                    logger.info('Queue is empty, no messages were received')
                 break
+            # TODO
+            # Remove output stage from list of remaining stages
+            self.mq_save_result(method, properties, body)
+            self.mq_channel.basic_ack(delivery_tag=method.delivery_tag)
+            n_messages += 1
     
     @staticmethod
     def create_msg(image, stages):
@@ -198,7 +228,7 @@ class Publisher:
         img.name = os.path.basename(image.name)
         img.content = image.read()
 
-        return message.SerializeToString()
+        return message
 
     @staticmethod
     def get_files(directory):
@@ -209,28 +239,16 @@ class Publisher:
         """
         files = []
         if os.path.exists(directory) and os.path.isdir(directory):
-            sys.stderr.write(f'error: {directory} is not a directory!')
+            logger.error(f'{directory} is not a directory!')
         
         for f in os.listdir(directory):
             f = os.path.join(directory, f)
             if not os.path.exists(f) or not os.path.isfile(f):
-                sys.stderr.write(f'error: {f} is not a file!\n')
-            try:
-                f = open(f, 'rb')
-                files.append(f)
-            except OSError:
-                sys.stderr.write(f'error: could not open file {f}!\n')
+                logger.error(f'{f} is not a file!')
+                continue
+            files.append(f)
         
         return files
-
-    def mq_confirm_delivery(self, method):
-        """
-        Receives confirmation from broker when message is uploaded.
-        :param method: frame method
-        """
-        if not method.NAME == 'Basic.Ack':
-            self.delivery_failed = True
-            print('DEBUG: Callback')
 
     def mq_upload_tasks(self, stages, priority, direcotry=None, files=[]):
         """
@@ -242,30 +260,33 @@ class Publisher:
         :param files: list of files to upload
         """
         if direcotry:
-            dir_files = self.get_dir_content(direcotry)
+            dir_files = self.get_files(direcotry)
             files = files + dir_files
         
         # register delivery confirmation callback
-        self.mq_channel.confirm_delivery(mq_confirm_delivery)
+        self.mq_channel.confirm_delivery()
 
         for f in files:
             try:
                 image = open(f, 'rb')
             except OSError:
-                sys.stderr.write(f'error: could not open file {f}!')
+                logger.error(f'Could not open file {f}!')
                 continue
             
             message = self.create_msg(image, stages)
+            image.close()
 
-            self.mq_channel.basic_publish('', stages[0], message)
-            print('DEBUG: Upload')
+            logger.info(f'Uploading file {f}')
+            logger.info(f'Assigned message id: {message.uuid}')
+            logger.info(f'Assigned page uuid: {message.page_uuid}')
 
-            # TODO
-            # check if this runs before or after the callback
-            if self.delivery_failed:
-                sys.stderr.write('error: failed to deliver message to the broker!\n')
-                sys.stderr.write(f'error: undelivered file: {os.path.basename(f)}!\n')
-                break        
+            try:
+                self.mq_channel.basic_publish('', stages[0], message.SerializeToString(), properties=pika.BasicProperties(
+                    delivery_mode=2
+                ))
+            except pika.exceptions.AMQPError as e:
+                logger.error('Message was not confirmed by the MQ broker!')
+                logger.error('Received error: {}'.format(e))
 
 def main():
     args = parse_args()
@@ -273,10 +294,10 @@ def main():
     
     # check for mq servers
     if args.mq_servers:
-        mq_servers = args.mq_servers
+        mq_servers = cf.server_list(args.mq_servers)
     
     if args.mq_list:
-        mq_servers = mq_list(args.mq_list)
+        mq_servers = cf.server_list(args.mq_list)
 
     # get zookeeper server list
     zookeeper_servers = cf.zk_server_list(args.zookeeper)
@@ -290,14 +311,14 @@ def main():
         try:
             zk.start(timeout=20)
         except KazooTimeoutError:
-            sys.stderr.writable('error: failed to connect to zookeeper!\n')
+            sys.stderr.writable('Failed to connect to zookeeper!')
             return 1
         
         # get server list
         try:
             mq_servers = zk.get_children(constants.WORKER_CONFIG_MQ_SERVERS)[0].decode('utf-8')
         except Exception:
-            sys.stderr.write('error: failed to obtain MQ server list from zookeeper!\n')
+            logger.error('Failed to obtain MQ server list from zookeeper!')
             mq_servers = None
         
         # close connection
@@ -305,7 +326,7 @@ def main():
             zk.stop()
             zk.close()
         except Exception:
-            sys.stderr.write('error: failed to close connection to zookeeper!\n')
+            logger.error('Failed to close connection to zookeeper!')
             traceback.print_exc()
         
         # if server list was not obtained, exit
@@ -313,8 +334,9 @@ def main():
             return 1
 
         # parse mq server list obtained from zookeeper
-        mq_servers = parse_mq_servers(mq_servers)
+        mq_servers = cf.server_list(mq_servers)
 
+    # connect to mq
     publisher = Publisher(mq_servers)
     publisher.mq_connect()
 
@@ -322,31 +344,31 @@ def main():
     # download results
     if args.download:
         if not args.directory:
-            sys.stderr.write(f'error: output directory not specified!\n')
+            logger.error(f'Output directory not specified!')
             error_code = 1
         if not error_code:
             try:
-                publisher.mq_get_results(args.download, args.directory, stages)
+                publisher.mq_get_results(args.download, args.directory)
             except Exception:
-                sys.stderr.write(f'error: failed to get results from {args.download}!\n')
+                logger.error(f'Failed to get results from {args.download}!')
                 traceback.print_exc()
     
     # upload tasks
     else:
-        if not args.directory or not args.files:
-            sys.stderr.write('error: no input files specified!\n')
+        if not args.directory and not args.images:
+            logger.error('No input files specified!')
             error_code = 1
         if not args.stages:
-            sys.stderr.write('error: no processing stages specified!\n')
+            logger.error('No processing stages specified!')
             error_code = 1
         if not error_code:
             try:
                 publisher.mq_upload_tasks(args.stages, args.priority, args.directory, args.images)
             except Exception:
-                sys.stderr.write('error: failed to upload tasks!\n')
+                logger.error('Failed to upload tasks!')
                 traceback.print_exc()
 
-    publisher.disconnect()
+    publisher.mq_disconnect()
     return error_code
 
 

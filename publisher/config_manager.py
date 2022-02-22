@@ -15,6 +15,18 @@ import pika
 from kazoo.client import KazooClient
 from kazoo.handlers.threading import KazooTimeoutError
 
+# setup logging (required by kazoo)
+log_formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
+
+stderr_handler = logging.StreamHandler()
+stderr_handler.setFormatter(log_formatter)
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+# TODO - remove debug level
+logger.setLevel(logging.DEBUG)
+logger.addHandler(stderr_handler)
+
 def dir_path(path):
     """
     Check if path is directory path
@@ -68,6 +80,7 @@ def parse_args():
         default=False,
         action='store_true'
     )
+    return parser.parse_args()
 
 def mq_connect(mq_servers):
     """
@@ -78,7 +91,7 @@ def mq_connect(mq_servers):
     mq_connection = None
     for server in mq_servers:
         try:
-            logger.info('Connectiong to MQ server {}'.format(mq_server))
+            logger.info('Connectiong to MQ server {}'.format(cf.ip_port_to_string(server)))
             mq_connection = pika.BlockingConnection(
                 pika.ConnectionParameters(
                     host=server['ip'],
@@ -139,13 +152,28 @@ def main():
 
     mq_channel = mq_connection.channel()
 
-    # TODO
+    if not mq_channel:
+        logger.error('Failed to open MQ channel!')
+        zk.stop()
+        zk.close()
+        mq_connection.close()
+        return 1
+
     if not args.delete:
+        # TODO
         # upload configuration
         # upload ocr
 
         # create queue
-        mq_channel.queue_declare(queue=args.name, arguments={'x-max-priority': 2})
+        try:
+            mq_channel.queue_declare(queue=args.name, arguments={'x-max-priority': 2})
+        except ValueError as e:
+            logger.error('Failed to declare queue {queue}! Received error: {error}'.format(
+                queue = args.name,
+                error = e
+            ))
+        else:
+            logger.info('Queue {} created succesfully'.format(args.name))
     
     else:
         # TODO
@@ -157,6 +185,8 @@ def main():
             mq_channel.queue_delete(queue=args.name)
         except ValueError:
             logger.error('Queue with name {} does not exist!'.format(args.name))
+        else:
+            logger.info('Queue {} deleted'.format(args.name))
     
     # disconnect from zookeeper
     if zk.connected:
