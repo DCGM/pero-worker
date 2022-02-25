@@ -9,7 +9,7 @@ import sys
 import os  # filesystem
 import argparse
 import uuid
-#import json  # nice logging of configuration objects
+import json  # configuration loading
 import traceback  # logging
 import configparser
 
@@ -230,6 +230,7 @@ class Worker(object):
             # TODO - move this to processing
             self.stop_processing()
             self.queue = queue
+            self.ocr_load(queue)
             # TODO
             # update config
             #self.start_processing()
@@ -267,6 +268,8 @@ class Worker(object):
             logger.error('Failed to obtain MQ server list. Zookeeper connection lost!')
             return
         
+        # TODO
+        # add parsing
         try:
             self.mq_servers = self.zk.get_children(
                 constants.WORKER_CONFIG_MQ_SERVERS)[0].decode('utf-8')
@@ -319,7 +322,7 @@ class Worker(object):
         Recovers worker to previous state after reconnecting to zookeeper
         :raise: ZookeeperError if server returns non zero value
         """
-        update_status(constants.STATUS_STARTING)
+        self.update_status(constants.STATUS_STARTING)
         self.queue = self.zk.get(constants.WORKER_QUEUE_TEMPLATE.format(
             worker_id = self.worker_id
         )).decode('utf-8')
@@ -359,7 +362,7 @@ class Worker(object):
         # try all servers
         # add port configuration
         self.mq_server = self.mq_servers[0]
-        logger.info('Connectiong to MQ server {}'.format(self.mq_server))
+        logger.info('Connecting to MQ server {}'.format(self.mq_server))
         self.mq_connection = pika.SelectConnection(
             pika.ConnectionParameters(
                 host=self.mq_server,
@@ -542,21 +545,64 @@ class Worker(object):
         # TODO - log content
         #log.log = "Lorem Ipsum"
 
-    def ocr_config_load(self, config):
+    def ocr_load(self, name):
         """
-        Loads ocr config
-        :param config: config name
+        Loads ocr for phase given by name
+        :param name: name of config/queue of the phase
         """
-        # TODO
-        pass
+        # create ocr directory
+        self.ocr = os.path.join(self.tmp_directory, name)
+        if os.path.exists(self.ocr):
+            self.clean_tmp_files(self.ocr)
+        os.mkdir(self.ocr)
 
-    def ocr_load(self, location):
-        """
-        Loads ocr data from given location
-        :param location: location of the data
-        """
-        # TODO
-        pass
+        # config
+        config_file_name = os.path.join(self.ocr, 'config.ini')
+
+        # get config from zookeeper and save to file
+        try:
+            config_content = self.zk.get(constants.PROCESSING_CONFIG_TEMPLATE.format(config_name=name))[0].decode('utf-8')
+        except (zk_exceptions.NoNodeError, zk_exceptions.ZookeeperError) as e:
+            self.update_status(constants.STATUS_FAILED)
+            logger.error('Failed to get configuration for {}'.format(name))
+            return  # stop reconfiguration if config can't be downloaded
+        with open(config_file_name, 'w') as config_file:
+            config_file.write(config_content)
+        
+        # load config
+        self.config = configparser.ConfigParser()
+        self.config.read(config_file_name)
+
+        # get ocr data
+        for section in self.config:
+            for key in self.config[section]:
+                try:
+                    value = json.loads(self.config[section][key])
+                    logger.debug('Successfully parsed config field: {section}:{key}:{value}'.format(
+                        section = section,
+                        key = key,
+                        value = self.config[section][key]
+                    ))
+                except json.decoder.JSONDecodeError:
+                    # not a valid json
+                    logger.debug('Failed to parse config field: {section}:{key}:{value}'.format(
+                        section = section,
+                        key = key,
+                        value = self.config[section][key]
+                    ))
+                else:
+                    if isinstance(value, dict):
+                        if 'url' in value and 'path' in value:
+                            logger.debug('Saving {url} as {path}'.format(
+                                url = value['url'],
+                                path = value['path']
+                            ))
+                            # TODO
+                            # download data over ftp
+                            # save data to path
+                            
+                            # set path to file
+                            self.config[section][key] = value['path']
     
     def stop_processing(self):
         """
@@ -665,12 +711,6 @@ def main():
         mq_servers=args.broker_servers,
         tmp_directory=args.tmp_directory if args.tmp_directory else None
     )
-
-    # TODO
-    # remove when config loading is done
-    worker.config = configparser.ConfigParser()
-    worker.config.read(os.path.join(args.ocr, 'config.ini'))
-    worker.ocr = args.ocr
 
     return worker.run()
 

@@ -6,7 +6,10 @@ import sys
 import os
 import logging
 import argparse
+
+# worker libraries
 import worker_functions.connection_aux_functions as cf
+import worker_functions.constants as constants
 
 # MQ
 import pika
@@ -66,8 +69,13 @@ def parse_args():
     )
     parser.add_argument(
         '-c', '--config',
-        help='Create configuration based on config file. Creates queue for configuration as well.',
+        help='Path to configuration file.',
         type=argparse.FileType('r')
+    )
+    parser.add_argument(
+        '-o', '--ocr',
+        help='OCR files to upload.',
+        nargs='+'
     )
     parser.add_argument(
         '-n', '--name',
@@ -77,6 +85,12 @@ def parse_args():
     parser.add_argument(
         '-d', '--delete',
         help='Delete configuration and queues instead creating it.',
+        default=False,
+        action='store_true'
+    )
+    parser.add_argument(
+        '-k', '--keep-config',
+        help='Keep configuration and delete only queue. (Works only with \'-d/--delete\' argument.)',
         default=False,
         action='store_true'
     )
@@ -121,6 +135,7 @@ def main():
         zk.start(timeout=20)
     except KazooTimeoutError:
         logger.error('Zookeeper connection timeout!')
+        return 1
     
     # get mq server list
     mq_servers = None
@@ -160,8 +175,13 @@ def main():
         return 1
 
     if not args.delete:
-        # TODO
         # upload configuration
+        if args.config:
+            zk.ensure_path(constants.PROCESSING_CONFIG_TEMPLATE.format(config_name = args.name))
+            zk.set(constants.PROCESSING_CONFIG_TEMPLATE.format(config_name = args.name), args.config.read().encode('utf-8'))
+            logger.info('Configuration file uploaded successfully!')
+        
+        # TODO
         # upload ocr
 
         # create queue
@@ -176,9 +196,14 @@ def main():
             logger.info('Queue {} created succesfully'.format(args.name))
     
     else:
-        # TODO
-        # delete configuration
-        # delete ocr
+        if not args.keep_config:
+            # delete configuration
+            if zk.exists(constants.PROCESSING_CONFIG_TEMPLATE.format(config_name = args.name)):
+                zk.delete(constants.PROCESSING_CONFIG_TEMPLATE.format(config_name = args.name))
+                logger.info('Configuration file deleted successfully!')
+        
+            # TODO
+            # delete ocr
         
         # delete queue
         try:
