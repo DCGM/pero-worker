@@ -353,19 +353,36 @@ class Worker(object):
         if self.mq_connection and self.mq_connection.is_open:
             self.mq_connection.close()
             self.mq_connection.ioloop.stop()
-    
-    def mq_connect(self):
+
+    def mq_connect(self, reconnect=False):
         """
         Connect to message broker
         """
         # TODO
-        # try all servers
         # add port configuration
-        self.mq_server = self.mq_servers[0]
-        logger.info('Connecting to MQ server {}'.format(self.mq_server))
+        
+        if reconnect:  # try all mq servers from begining
+            self.mq_server = None
+        
+        # select server to connect to
+        for i in range(0, len(self.mq_servers)):
+            if not self.mq_server:
+                self.mq_server = self.mq_servers[i]
+                break
+            elif self.mq_server == self.mq_servers[i]:
+                if i+1 < len(self.mq_servers):
+                    self.mq_server = self.mq_servers[i+1]
+                else:
+                    logger.error('Failed to connect to any of the MQ servers!')
+                    self.mq_server = None
+                    return
+        
+        # connect to selected mq server
+        logger.info('Connecting to MQ server {}'.format(cf.ip_port_to_string(self.mq_server)))
         self.mq_connection = pika.SelectConnection(
             pika.ConnectionParameters(
-                host=self.mq_server,
+                host=self.mq_server['ip'],
+                port=self.mq_server['port'] if self.mq_server['port'] else pika.ConnectionParameters.DEFAULT_PORT
             ),
             on_open_callback=self.mq_channel_create,
             on_open_error_callback=self.mq_connection_open_error,
@@ -564,7 +581,7 @@ class Worker(object):
             config_content = self.zk.get(constants.PROCESSING_CONFIG_TEMPLATE.format(config_name=name))[0].decode('utf-8')
         except (zk_exceptions.NoNodeError, zk_exceptions.ZookeeperError) as e:
             self.update_status(constants.STATUS_FAILED)
-            logger.error('Failed to get configuration for {}'.format(name))
+            logger.error('Failed to get configuration for phase {}'.format(name))
             return  # stop reconfiguration if config can't be downloaded
         with open(config_file_name, 'w') as config_file:
             config_file.write(config_content)
@@ -704,12 +721,17 @@ class Worker(object):
 def main():
     args = parse_args()
 
+    # validate server lists and convert them to correct format for each connection
     zk_servers = cf.zk_server_list(args.zookeeper)
+    mq_servers = cf.server_list(args.broker_servers) if args.broker_servers else None
+    
+    # select tmp directory
+    tmp_dir = args.tmp_directory if args.tmp_directory else None
 
     worker = Worker(
         zookeeper_servers=zk_servers,
-        mq_servers=args.broker_servers,
-        tmp_directory=args.tmp_directory if args.tmp_directory else None
+        mq_servers=mq_servers,
+        tmp_directory=tmp_dir
     )
 
     return worker.run()
