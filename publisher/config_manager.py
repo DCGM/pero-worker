@@ -6,6 +6,7 @@ import sys
 import os
 import logging
 import argparse
+from ftplib import FTP, error_perm, error_reply
 
 # worker libraries
 import worker_functions.connection_aux_functions as cf
@@ -68,19 +69,43 @@ def parse_args():
         type=argparse.FileType('r')
     )
     parser.add_argument(
+        '-r', '--ftp-servers',
+        help='List of ftp servers for uploading files.',
+        nargs='+'
+    )
+    parser.add_argument(
+        '-i', '--ftp-list',
+        help='File containing list of ftp servers. One server per line.',
+        type=argparse.FileType('r')
+    )
+    parser.add_argument(
+        '-u', '--user',
+        help='User name for servers.',
+        default='pero'
+    )
+    parser.add_argument(
+        '-p', '--password',
+        help='Password for servers.',
+        default='pero'
+    )
+    parser.add_argument(
         '-c', '--config',
         help='Path to configuration file.',
         type=argparse.FileType('r')
     )
     parser.add_argument(
-        '-o', '--ocr',
-        help='OCR files to upload.',
-        nargs='+'
+        '-f', '--file',
+        help='File to upload. Argument can be used multiple times.',
+        action='append'
+    )
+    parser.add_argument(
+        '-t', '--target-file',
+        help='Target path where to upload file. If \'-d/--delete\' is specified, marks remote file for deletion. Argument can be used multiple times.',
+        action='append'
     )
     parser.add_argument(
         '-n', '--name',
-        help='Name for identification of queue and configuration files.',
-        required=True
+        help='Name for identification of queue and configuration files.'
     )
     parser.add_argument(
         '-d', '--delete',
@@ -120,6 +145,30 @@ def mq_connect(mq_servers):
             break
     
     return mq_connection
+
+def ftp_connect(ftp_servers):
+    """
+    Connect to ftp server
+    :param ftp_servers: ftp servers to try
+    :return: ftp connection
+    """
+    ftp = None
+    for server in ftp_servers:
+        try:
+            logger.info('Connecting to FTP server {}'.format(cf.ip_port_to_string(server)))
+            ftp = FTP()
+            ftp.connect(
+                host=server['ip'],
+                port=server['port'] if server['port'] else 0  # 0 == use default
+            )
+        except (OSError, ConnectionError) as e:
+            logger.error('Connection failed! Received error: {}'.format(e))
+            ftp = None
+            continue
+        else:
+            break
+    
+    return ftp
 
 def main():
     args = parse_args()
@@ -173,45 +222,120 @@ def main():
         zk.close()
         mq_connection.close()
         return 1
+    
+    # Get ftp server list
+    ftp_servers = None
+    if args.ftp_servers:
+        ftp_servers = cf.server_list(args.ftp_servers)
+    elif args.ftp_list:
+        ftp_servers = cf.server_list(args.frt_list)
+    else:
+        try:
+            ftp_servers = zk.get_children(constants.WORKER_CONFIG_FTP_SERVERS)[0].decode('utf-8')
+        except Exception:
+            logger.error('Failed to obtain FTP srver list from zookeeper!')
+            ftp_servers = None
+    
+    # connect to ftp
+    ftp = ftp_connect(ftp_servers)
+
+    if not ftp:
+        logger.error('Failed to connect to FTP!')
+        zk.stop()
+        zk.close()
+        mq_channel.close()
+        mq_connection.close()
+        return 1
+    
+    try:
+        ftp.login(args.user, args.password)
+    except error_perm:
+        logger.error('Failed to login to FTP!')
+        zk.stop()
+        zk.close()
+        mq_channel.close()
+        mq_connection.close()
+        ftp.quit()
+        return 1
 
     if not args.delete:
-        # upload configuration
-        if args.config:
-            zk.ensure_path(constants.PROCESSING_CONFIG_TEMPLATE.format(config_name = args.name))
-            zk.set(constants.PROCESSING_CONFIG_TEMPLATE.format(config_name = args.name), args.config.read().encode('utf-8'))
-            logger.info('Configuration file uploaded successfully!')
-        
-        # TODO
-        # upload ocr
+        # upload file to ftp
+        for i in range(0, len(args.file)):
+            path = args.file[i]
+            if i < len(args.target_file):
+                target = args.target_file[i]
+            elif args.name:
+                target = os.path.join(args.name, os.path.basename(path))
+            else:
+                logger.error('Failed to upload file {file}, target location not specified!'.format(path))
+                continue
+            try:
+                # TODO
+                # store file to subfolders
+                with open(path, 'rb') as fd:
+                    ftp.storbinary('STOR {}'.format(target), fd)
+            except (FileNotFoundError, PermissionError) as e:
+                logger.error('Failed to upload file {}'.format(path))
+                logger.error('Received error: {}'.format(e))
+            else:
+                logger.info('{file} successfully uploaded as {target}'.format(
+                    file = path,
+                    target = target
+                ))
 
-        # create queue
-        try:
-            mq_channel.queue_declare(queue=args.name, arguments={'x-max-priority': 2})
-        except ValueError as e:
-            logger.error('Failed to declare queue {queue}! Received error: {error}'.format(
-                queue = args.name,
-                error = e
-            ))
-        else:
-            logger.info('Queue {} created succesfully'.format(args.name))
+        if args.name:
+            # upload configuration
+            if args.config:
+                zk.ensure_path(constants.PROCESSING_CONFIG_TEMPLATE.format(config_name = args.name))
+                zk.set(constants.PROCESSING_CONFIG_TEMPLATE.format(config_name = args.name), args.config.read().encode('utf-8'))
+                logger.info('Configuration file uploaded successfully!')
+
+            # create queue
+            try:
+                mq_channel.queue_declare(queue=args.name, arguments={'x-max-priority': 2})
+            except ValueError as e:
+                logger.error('Failed to declare queue {queue}! Received error: {error}'.format(
+                    queue = args.name,
+                    error = e
+                ))
+            else:
+                logger.info('Queue {} created succesfully'.format(args.name))
     
     else:
-        if not args.keep_config:
+        # delete ftp files
+        for target in args.target_file:
+            try:
+                # TODO
+                # search in subfolders
+                file_found = False
+                for f in ftp.nlst():
+                    if target == f:
+                        file_found = True
+                if file_found:
+                    ftp.delete(target)
+                    logger.info('File {} deleted'.format(target))
+                else:
+                    logger.warn('File {} not found!'.format(target))
+            except error_perm:
+                logger.error('Insufficient permissions to delete {}!'.format(target))
+            except error_reply as e:
+                logger.error('Failed to delete file {}!'.format(target))
+                logger.error('Received error: {}'.format(e))
+        
+        if args.name:
             # delete configuration
-            if zk.exists(constants.PROCESSING_CONFIG_TEMPLATE.format(config_name = args.name)):
-                zk.delete(constants.PROCESSING_CONFIG_TEMPLATE.format(config_name = args.name))
-                logger.info('Configuration file deleted successfully!')
-        
-            # TODO
-            # delete ocr
-        
-        # delete queue
-        try:
-            mq_channel.queue_delete(queue=args.name)
-        except ValueError:
-            logger.error('Queue with name {} does not exist!'.format(args.name))
-        else:
-            logger.info('Queue {} deleted'.format(args.name))
+            if not args.keep_config:
+                if zk.exists(constants.PROCESSING_CONFIG_TEMPLATE.format(config_name = args.name)):
+                    zk.delete(constants.PROCESSING_CONFIG_TEMPLATE.format(config_name = args.name))
+                    logger.info('Configuration file deleted successfully!')
+            
+            # delete queue
+            try:
+                mq_channel.queue_delete(queue=args.name)
+            except ValueError:
+                logger.error('Queue with name {} does not exist!'.format(args.name))
+            else:
+                logger.info('Queue {} deleted'.format(args.name))
     
     # disconnect from zookeeper
     if zk.connected:
@@ -223,6 +347,14 @@ def main():
         mq_channel.close()
     if mq_connection.is_open:
         mq_connection.close()
+    
+    # disconnect from ftp
+    if ftp:
+        try:
+            ftp.quit()
+        except AttributeError:
+            # connection is closed
+            pass
 
     return 0
 

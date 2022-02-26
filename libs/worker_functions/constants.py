@@ -15,6 +15,7 @@ WORKER_ENABLED_TEMPLATE = WORKER_STATUS + '/{worker_id}/enabled'  # worker enabl
 WORKER_CONFIG = PERO_PATH + '/worker/config'  # configs for all workers
 WORKER_CONFIG_TEMPLATE = WORKER_CONFIG + '/{config_key}'
 WORKER_CONFIG_MQ_SERVERS = WORKER_CONFIG + '/mq_servers'
+WORKER_CONFIG_FTP_SERVERS = WORKER_CONFIG + '/ftp_servers'
 
 PROCESSING_CONFIG = PERO_PATH + '/config'  # configs for processing (config.ini)
 PROCESSING_CONFIG_TEMPLATE = PROCESSING_CONFIG + '/{config_name}'
