@@ -146,29 +146,18 @@ def mq_connect(mq_servers):
     
     return mq_connection
 
-def ftp_connect(ftp_servers):
+def ftp_create_dir(ftp, path):
     """
-    Connect to ftp server
-    :param ftp_servers: ftp servers to try
-    :return: ftp connection
+    Creates directory path in ftp
+    :param ftp: ftp server connection
+    :param path: directory path to create
     """
-    ftp = None
-    for server in ftp_servers:
-        try:
-            logger.info('Connecting to FTP server {}'.format(cf.ip_port_to_string(server)))
-            ftp = FTP()
-            ftp.connect(
-                host=server['ip'],
-                port=server['port'] if server['port'] else 0  # 0 == use default
-            )
-        except (OSError, ConnectionError) as e:
-            logger.error('Connection failed! Received error: {}'.format(e))
-            ftp = None
-            continue
-        else:
-            break
-    
-    return ftp
+    path = path.split('/')
+    current_path = ''
+    for directory in path:
+        if directory not in ftp.nlst(current_path):
+            ftp.sendcmd('MKD {}'.format(os.path.join(current_path, directory)))
+        current_path = os.path.join(current_path, directory)
 
 def main():
     args = parse_args()
@@ -237,7 +226,7 @@ def main():
             ftp_servers = None
     
     # connect to ftp
-    ftp = ftp_connect(ftp_servers)
+    ftp = cf.ftp_connect(ftp_servers)
 
     if not ftp:
         logger.error('Failed to connect to FTP!')
@@ -260,28 +249,29 @@ def main():
 
     if not args.delete:
         # upload file to ftp
-        for i in range(0, len(args.file)):
-            path = args.file[i]
-            if i < len(args.target_file):
-                target = args.target_file[i]
-            elif args.name:
-                target = os.path.join(args.name, os.path.basename(path))
-            else:
-                logger.error('Failed to upload file {file}, target location not specified!'.format(path))
-                continue
-            try:
-                # TODO
-                # store file to subfolders
-                with open(path, 'rb') as fd:
-                    ftp.storbinary('STOR {}'.format(target), fd)
-            except (FileNotFoundError, PermissionError) as e:
-                logger.error('Failed to upload file {}'.format(path))
-                logger.error('Received error: {}'.format(e))
-            else:
-                logger.info('{file} successfully uploaded as {target}'.format(
-                    file = path,
-                    target = target
-                ))
+        if args.file:
+            for i in range(0, len(args.file)):
+                path = args.file[i]
+                if i < len(args.target_file):
+                    target = args.target_file[i]
+                elif args.name:
+                    target = os.path.join(args.name, os.path.basename(path))
+                else:
+                    logger.error('Failed to upload file {file}, target location not specified!'.format(path))
+                    continue
+                try:
+                    # TODO
+                    # store file to subfolders
+                    with open(path, 'rb') as fd:
+                        ftp.storbinary('STOR {}'.format(target), fd)
+                except (FileNotFoundError, PermissionError) as e:
+                    logger.error('Failed to upload file {}'.format(path))
+                    logger.error('Received error: {}'.format(e))
+                else:
+                    logger.info('{file} successfully uploaded as {target}'.format(
+                        file = path,
+                        target = target
+                    ))
 
         if args.name:
             # upload configuration
