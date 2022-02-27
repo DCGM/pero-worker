@@ -6,7 +6,9 @@ import json # DEBUG
 import ipaddress
 import re
 import logging
+from ftplib import FTP
 
+logger = logging.getLogger(__name__)
 
 def ip_port_to_string(record: dict) -> str:
     """
@@ -106,7 +108,7 @@ def server_list(server_list) -> list:
         try:
             server = parse_ip_port(server)
         except ValueError as e:
-            logging.error(e)
+            logger.error(e)
             # skip bad server record
         else:
             servers.append(server)
@@ -126,3 +128,27 @@ def zk_server_list(servers) -> str:
         output_servers.append(ip_port_to_string(server))
     # join to resulting csv
     return ','.join(output_servers)
+
+def ftp_connect(ftp_servers):
+    """
+    Connect to ftp server
+    :param ftp_servers: ftp servers to try
+    :return: ftp connection
+    """
+    ftp = None
+    for server in ftp_servers:
+        try:
+            logger.info('Connecting to FTP server {}'.format(ip_port_to_string(server)))
+            ftp = FTP()
+            ftp.connect(
+                host=server['ip'],
+                port=server['port'] if server['port'] else 0  # 0 == use default
+            )
+        except (OSError, ConnectionError) as e:
+            logger.error('Connection failed! Received error: {}'.format(e))
+            ftp = None
+            continue
+        else:
+            break
+    
+    return ftp
