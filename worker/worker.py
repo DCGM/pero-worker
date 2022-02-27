@@ -12,6 +12,7 @@ import uuid
 import json  # configuration loading
 import traceback  # logging
 import configparser
+from ftplib import FTP, all_errors, error_perm
 
 # load image and data for processing
 import cv2
@@ -75,7 +76,7 @@ def parse_args():
     argparser.add_argument(
         '-z', '--zookeeper',
         help='List of zookeeper servers from where configuration will be downloaded. If port is omitted, default zookeeper port is used.',
-        nargs='+', # TODO - check if addresses are valid
+        nargs='+',
         default=['127.0.0.1:2181']
     )
     argparser.add_argument(
@@ -90,7 +91,13 @@ def parse_args():
     argparser.add_argument(
         '-b', '--broker-servers',
         help='List of message queue broker servers where to get and send processing requests',
-        nargs='+', # TODO - check if addresses are valid
+        nargs='+',
+        default=['127.0.0.1']
+    )
+    argparser.add_argument(
+        '-f', '--ftp-servers',
+        help='List of ftp servers.',
+        nargs='+',
         default=['127.0.0.1']
     )
     argparser.add_argument(
@@ -107,6 +114,16 @@ def parse_args():
         help='Path to directory where temporary files will be stored',
         type=dir_path
     )
+    argparser.add_argument(
+        '-u', '--user',
+        help='Username for server authentication.',
+        default='pero'  # this is for testing only!
+    )
+    argparser.add_argument(
+        '-p', '--password',
+        help='Password for user authentication.',
+        default='pero'  # this is for testing only!
+    )
     return argparser.parse_args()
 
 class Worker(object):
@@ -114,7 +131,7 @@ class Worker(object):
     Pero processing worker
     """
 
-    def __init__(self, zookeeper_servers, mq_servers = [], worker_id = None, tmp_directory = None, enabled = True):
+    def __init__(self, user, password, zookeeper_servers, mq_servers = [], ftp_servers = [], worker_id = None, tmp_directory = None, enabled = True):
         """
         Initialize worker
         :param worker_id: worker identifier
@@ -126,23 +143,29 @@ class Worker(object):
         self.tmp_directory = tmp_directory
         self.zookeeper_servers = zookeeper_servers
         self.mq_servers = mq_servers
+        self.ftp_servers = ftp_servers
 
         # configuration for the page parser and selected orc
         self.config = None
         self.ocr = None
+
+        # ftp login
+        self.user = user
+        self.password = password
 
         # worker connections
         self.channel = None
         self.mq_connection = None
         self.mq_connection_ioloop_running = False
         self.zk = None
+        self.ftp = None
 
         # selected broker server
         self.mq_server = None
 
         # worker status
         self.status = constants.STATUS_STARTING
-        self.queue = None
+        self.queue = ''
         self.active_queue = None
         self.enabled = enabled
 
@@ -184,11 +207,41 @@ class Worker(object):
         #self.update_status(constants.STATUS_DEAD)
         logger.debug('Cleanup phase: disconnect mq')
         self.mq_disconnect()
+        logger.debug('Cleanup phase: disconnect ftp')
+        self.ftp_disconnect()
         logger.debug('Cleanup phase: disconnect zk')
         self.zk_disconnect()
         logger.debug('Cleanup phase: cleanup tmp files')
         self.clean_tmp_files()
         logger.debug('Cleanup complete!')
+    
+    def ftp_connect(self):
+        """
+        Connects to ftp
+        """
+        self.ftp = cf.ftp_connect(self.ftp_servers)
+        if not self.ftp:
+            raise ConnectionError('Failed to connect to ftp servers!')
+        self.ftp.login(self.user, self.password)
+    
+    def ftp_disconnect(self):
+        """
+        Disconnects from ftp
+        """
+        if self.ftp:
+            try:
+                self.ftp.quit()
+            except AttributeError:
+                # connection is already closed
+                pass
+            except Exception:
+                # failed to disconnect the polite way
+                # close the connection (the ugly way)
+                try:
+                    self.ftp.close()
+                except Exception:
+                    logger.error('Error occured during disconnecting from FTP!')
+                    logger.error('{}'.format(traceback.format_exc()))
     
     def zk_disconnect(self):
         """
@@ -230,11 +283,16 @@ class Worker(object):
             # TODO - move this to processing
             self.stop_processing()
             self.queue = queue
-            self.ocr_load(queue)
-            # TODO
-            # update config
-            #self.start_processing()
-            self.mq_queue_setup()
+            try:
+                self.ocr_load(queue)
+            except Exception:
+                self.update_status(constants.STATUS_FAILED)
+                logger.error('Failed to switch queue to {}, could not get configuration for given processing phase!'.format(
+                    queue
+                ))
+                logger.error('{}'.format(traceback.format_exc()))
+            else:
+                self.mq_queue_setup()
     
     def shutdown(self, data, status):
         """
@@ -581,14 +639,25 @@ class Worker(object):
             config_content = self.zk.get(constants.PROCESSING_CONFIG_TEMPLATE.format(config_name=name))[0].decode('utf-8')
         except (zk_exceptions.NoNodeError, zk_exceptions.ZookeeperError) as e:
             self.update_status(constants.STATUS_FAILED)
-            logger.error('Failed to get configuration for phase {}'.format(name))
-            return  # stop reconfiguration if config can't be downloaded
+            logger.error('Failed to get configuration for processing phase {}'.format(name))
+            # stop reconfiguration if config can't be downloaded
+            raise
         with open(config_file_name, 'w') as config_file:
             config_file.write(config_content)
         
         # load config
         self.config = configparser.ConfigParser()
         self.config.read(config_file_name)
+
+        # connect to ftp servers
+        try:
+            self.ftp_connect()
+        except error_perm:
+            logger.critical('Wrong FTP server password!')
+            raise
+        except Exception:
+            logger.critical('Failed to connect to ftp servers!')
+            raise
 
         # get ocr data
         for section in self.config:
@@ -610,16 +679,25 @@ class Worker(object):
                 else:
                     if isinstance(value, dict):
                         if 'url' in value and 'path' in value:
-                            logger.debug('Saving {url} as {path}'.format(
-                                url = value['url'],
-                                path = value['path']
-                            ))
-                            # TODO
-                            # download data over ftp
-                            # save data to path
-                            
-                            # set path to file
-                            self.config[section][key] = value['path']
+                            try:
+                                with open(os.path.join(self.ocr, value['path']), 'wb') as fd:
+                                    self.ftp.retrbinary('RETR {}'.format(value['url']), fd.write)
+                            except (PermissionError, all_errors) as e:
+                                logger.error('Failed to retreive file {url} and save it to {path}!'.format(
+                                    path = value['path'],
+                                    url = value['url']
+                                ))
+                                # stop configuration
+                                self.ftp_disconnect()
+                                raise
+                            else:
+                                logger.debug('File {url} saved to {path}'.format(
+                                    url = value['url'],
+                                    path = value['path']
+                                ))
+                                # set path to file
+                                self.config[section][key] = value['path']
+        self.ftp_disconnect()
     
     def stop_processing(self):
         """
@@ -724,14 +802,18 @@ def main():
     # validate server lists and convert them to correct format for each connection
     zk_servers = cf.zk_server_list(args.zookeeper)
     mq_servers = cf.server_list(args.broker_servers) if args.broker_servers else None
+    ftp_servers = cf.server_list(args.ftp_servers) if args.ftp_servers else None
     
     # select tmp directory
     tmp_dir = args.tmp_directory if args.tmp_directory else None
 
     worker = Worker(
+        user=args.user,
+        password=args.password,
         zookeeper_servers=zk_servers,
         mq_servers=mq_servers,
-        tmp_directory=tmp_dir
+        ftp_servers=ftp_servers,
+        tmp_directory=tmp_dir,
     )
 
     return worker.run()
