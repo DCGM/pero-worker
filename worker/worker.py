@@ -12,6 +12,7 @@ import uuid
 import json  # configuration loading
 import traceback  # logging
 import configparser
+import threading
 from ftplib import FTP, all_errors, error_perm
 
 # load image and data for processing
@@ -131,7 +132,7 @@ class Worker(object):
     Pero processing worker
     """
 
-    def __init__(self, user, password, zookeeper_servers, mq_servers = [], ftp_servers = [], worker_id = None, tmp_directory = None, enabled = True):
+    def __init__(self, user, password, zookeeper_servers, mq_servers = [], ftp_servers = [], worker_id = None, tmp_directory = None):
         """
         Initialize worker
         :param worker_id: worker identifier
@@ -154,9 +155,8 @@ class Worker(object):
         self.password = password
 
         # worker connections
-        self.channel = None
+        self.mq_channel = None
         self.mq_connection = None
-        self.mq_connection_ioloop_running = False
         self.zk = None
         self.ftp = None
 
@@ -166,8 +166,13 @@ class Worker(object):
         # worker status
         self.status = constants.STATUS_STARTING
         self.queue = ''
-        self.active_queue = None
-        self.enabled = enabled
+        self.enabled = True
+        self.queue_config_version = -1
+
+        # processing lock
+        self.processing_lock = threading.Lock()
+        self.switch_queue_lock = threading.Lock()
+        self.status_lock = threading.Lock()
 
     def clean_tmp_files(self, path=None):
         """
@@ -192,8 +197,8 @@ class Worker(object):
             return
         
         # clean files from temp directory
-        for file in os.listdir(path):
-            clean_tmp_files(path)
+        for file_name in os.listdir(path):
+            self.clean_tmp_files(os.path.join(path, file_name))
         
         # remove temp direcotry
         os.rmdir(path)
@@ -272,35 +277,71 @@ class Worker(object):
             logger.error('Zookeeper connection timeout!')
             raise
     
-    def zk_switch_queue(self, data, status):
+    def zk_callback_switch_queue(self, data, status, *args):
         """
         Zookeeper callback reacting on notification to switch queue
         :param data: new queue name as byte string
         :param status: status of the zookeeper queue node
+        :param args: additional arguments (like event)
         """
+        # get new queue
         queue = data.decode('utf-8')
-        if queue != self.queue:
-            # TODO - move this to processing
-            self.stop_processing()
-            self.queue = queue
-            try:
-                self.ocr_load(queue)
-            except Exception:
-                self.update_status(constants.STATUS_FAILED)
-                logger.error('Failed to switch queue to {}, could not get configuration for given processing phase!'.format(
-                    queue
-                ))
-                logger.error('{}'.format(traceback.format_exc()))
-            else:
-                self.mq_queue_setup()
+
+        # prevent multiple queue switching at same time
+        self.switch_queue_lock.acquire()
+
+        # check if queue wasn't switched again during waiting
+        if self.queue_config_version >= status.version:
+            self.switch_queue_lock.release()
+            return
+        
+        self.queue_config_version = status.version
+        
+        # check if there is something to do
+        if queue == self.queue:
+            self.switch_queue_lock.release()
+            return
+        
+        # wait until current request is processed
+        # and block processing of all new requests from this queue
+        self.processing_lock.acquire()
+
+        self.update_status(constants.STATUS_RECONFIGURING)
+
+        # stop processing of cureent queue
+        self.stop_processing()
+
+        self.queue = queue
+
+        # load OCR data and configuration
+        try:
+            self.ocr_load(queue)
+        except Exception:
+            self.update_status(constants.STATUS_FAILED)
+            logger.error('Failed to switch queue to {}, could not get configuration for given processing phase!'.format(
+                queue
+            ))
+            logger.error('{}'.format(traceback.format_exc()))
+        else:
+            # on success start processing of new queue
+            self.mq_channel_create(self.mq_connection)
+        finally:
+            self.update_status(constants.STATUS_IDLE)
+            # unblock processing and switching to new queue
+            self.switch_queue_lock.release()
+            self.processing_lock.release()
     
-    def shutdown(self, data, status):
+    def zk_callback_shutdown(self, data, status, *args):
         """
         Shutdown the worker if set to disabled state.
-        :param async_object: zookeeper object passed into callback
+        :param data: shutdown notification
+        :param status: new zookeeper node status
+        :param args: additional arguments (like event)
         """
         enabled = data.decode('utf-8').lower()
         if enabled != 'true':
+            logger.info('Shutdown signal received!')
+            self.update_status(constants.STATUS_DEAD)
             self.mq_disconnect()
     
     def gen_id(self):
@@ -341,16 +382,19 @@ class Worker(object):
         :raise: NoNodeError if status node path is not initialized
         :raise: ZookeeperError if server returns non zero value
         """
+        self.status_lock.acquire()
         self.status = status
 
         if self.zk.state != KazooState.CONNECTED:
             logger.error('Failed to update status in zookeeper. Zookeeper connection lost!')
+            self.status_lock.release()
             return
         
         self.zk.set(constants.WORKER_STATUS_TEMPLATE.format(
             worker_id = self.worker_id),
             self.status.encode('utf-8')
         )
+        self.status_lock.release()
     
     def init_worker_status(self):
         """
@@ -404,9 +448,8 @@ class Worker(object):
         """
         Stops connection to message broker
         """
-        if self.channel and self.channel.is_open:
+        if self.mq_channel and self.mq_channel.is_open:
             self.stop_processing()
-            self.channel.close()
         
         if self.mq_connection and self.mq_connection.is_open:
             self.mq_connection.close()
@@ -442,10 +485,17 @@ class Worker(object):
                 host=self.mq_server['ip'],
                 port=self.mq_server['port'] if self.mq_server['port'] else pika.ConnectionParameters.DEFAULT_PORT
             ),
-            on_open_callback=self.mq_channel_create,
+            on_open_callback=self.mq_connection_open_ok,
             on_open_error_callback=self.mq_connection_open_error,
             on_close_callback=self.mq_connection_close
         )
+    
+    def mq_connection_open_ok(self, connection):
+        """
+        Callback for reporting successfully established connection to mq broker.
+        :param connection: message broker connection - same as self.mq_connection
+        """
+        logger.info('Connection to MQ establisted successfully')
     
     def mq_connection_open_error(self, connection, error):
         """
@@ -485,20 +535,23 @@ class Worker(object):
         # set number of prefetched messages
         channel.basic_qos(prefetch_count=5)
         
-        self.channel = channel
+        self.mq_channel = channel
 
         logger.info('MQ Channel setup complete')
+
+        if self.queue:
+            self.mq_queue_setup()
     
     def mq_queue_setup(self):
         """
         Setup parameters for input queue
         """
-        if not self.channel or not self.channel.is_open:
+        if not self.mq_channel or not self.mq_channel.is_open:
             logger.error('Queue setup failed, mq channel is not open!')
             return
 
         # register callback for data processing
-        self.channel.basic_consume(
+        self.mq_channel.basic_consume(
             self.queue,
             self.mq_process_request,
             consumer_tag = self.worker_id
@@ -513,6 +566,10 @@ class Worker(object):
         :param body: message body (actual processing request)
         :raise: ValueError if output queue is not declared on broker
         """
+        self.processing_lock.acquire()
+        self.update_status(constants.STATUS_PROCESSING)
+        # TODO
+        # add try/catch for parsing request (can be something else than protobuf)
         processing_request = ProcessingRequest().FromString(body)
         current_stage = processing_request.processing_stages[0]
 
@@ -525,6 +582,7 @@ class Worker(object):
             logger.error('Failed to process request! Received error: {error}'.format(error=e))
             output_stage = processing_request.processing_stages[-1]
             channel.basic_publish('', output_stage, processing_request.SerializeToString())
+            channel.basic_ack(delivery_tag = method.delivery_tag)
         except Exception:
             logger.error('Failed to process request {request_id} using stage {stage}!'.format(
                 request_id = processing_request.uuid,
@@ -532,16 +590,23 @@ class Worker(object):
             ))
             logger.error(traceback.format_exc())
             channel.basic_nack(delivery_tag = method.delivery_tag)
-        
-        processing_request.processing_stages.pop(0)
-        next_stage = processing_request.processing_stages[0]
-        
-        # send request to output queue and
-        # acknowledge the request after successfull processing
-        # TODO
-        # add validation if message was received by mq
-        channel.basic_publish('', next_stage, processing_request.SerializeToString())
-        channel.basic_ack(delivery_tag = method.delivery_tag)
+        else:
+            processing_request.processing_stages.pop(0)
+            next_stage = processing_request.processing_stages[0]
+            
+            # send request to output queue and
+            # acknowledge the request after successfull processing
+            # TODO
+            # add validation if message was received by mq
+            channel.basic_publish('', next_stage, processing_request.SerializeToString())
+            channel.basic_ack(delivery_tag = method.delivery_tag)
+        finally:
+            self.update_status(constants.STATUS_IDLE)
+            self.processing_lock.release()
+
+            # wait until canceled during queue switching
+            self.switch_queue_lock.acquire()
+            self.switch_queue_lock.release()
 
     def ocr_process_request(self, processing_request):
         """
@@ -704,17 +769,22 @@ class Worker(object):
         Stops processing of current queue.
         Runs only if channel is open.
         """
-        if not self.channel:
+        if not self.mq_channel:
             return
         
-        if not self.channel.is_open:
+        if not self.mq_channel.is_open:
             return
 
         try:
-            self.channel.basic_cancel(self.worker_id)
+            self.mq_channel.basic_cancel(self.worker_id)
         except ValueError:
             # worker was not processing
             pass
+
+        # redeliver received unprocessed messages
+        self.mq_channel.basic_recover(True)
+
+        self.mq_channel.close()
     
     def run(self):
         """
@@ -753,12 +823,12 @@ class Worker(object):
         # switch queue callback
         self.zk.DataWatch(
             path=constants.WORKER_QUEUE_TEMPLATE.format(worker_id=self.worker_id),
-            func=self.zk_switch_queue
+            func=self.zk_callback_switch_queue
         )
         # shutdown callback
         self.zk.DataWatch(
             path=constants.WORKER_ENABLED_TEMPLATE.format(worker_id=self.worker_id),
-            func=self.shutdown
+            func=self.zk_callback_shutdown
         )
 
         # setup MQ connection and channel
@@ -779,16 +849,13 @@ class Worker(object):
         try:
             # uses this thread for managing the MQ connection
             # until the connection is closed
-            self.mq_connection_ioloop_running = True
             self.mq_connection.ioloop.start()  # TODO - run connection in diferent thread
         except KeyboardInterrupt:
             # TODO - debug keyboard interrupt - sometimes does not stop the ioloop
-            self.mq_connection_ioloop_running = False
-            logger.info('Shutdown signal received!')
+            logger.info('User interrupt received! Shutting down!')
             self.mq_disconnect()
             self.update_status(constants.STATUS_DEAD)
         except Exception:
-            self.mq_connection_ioloop_running = False
             logger.critical('Connection to message broker failed!')
             logger.critical(traceback.format_exc())
             self.update_status(constants.STATUS_FAILED)
