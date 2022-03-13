@@ -276,8 +276,8 @@ def main():
         if args.name:
             # upload configuration
             if args.config:
-                zk.ensure_path(constants.PROCESSING_CONFIG_TEMPLATE.format(config_name = args.name))
-                zk.set(constants.PROCESSING_CONFIG_TEMPLATE.format(config_name = args.name), args.config.read().encode('utf-8'))
+                zk.ensure_path(constants.QUEUE_CONFIG_TEMPLATE.format(queue_name = args.name))
+                zk.set(constants.QUEUE_CONFIG_TEMPLATE.format(queue_name = args.name), args.config.read().encode('utf-8'))
                 logger.info('Configuration file uploaded successfully!')
 
             # create queue
@@ -315,8 +315,8 @@ def main():
         if args.name:
             # delete configuration
             if not args.keep_config:
-                if zk.exists(constants.PROCESSING_CONFIG_TEMPLATE.format(config_name = args.name)):
-                    zk.delete(constants.PROCESSING_CONFIG_TEMPLATE.format(config_name = args.name))
+                if zk.exists(constants.QUEUE_TEMPLATE.format(queue_name = args.name)):
+                    zk.delete(constants.QUEUE_TEMPLATE.format(queue_name = args.name))
                     logger.info('Configuration file deleted successfully!')
             
             # delete queue
