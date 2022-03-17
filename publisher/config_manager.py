@@ -6,7 +6,6 @@ import sys
 import os
 import logging
 import argparse
-from ftplib import FTP, error_perm, error_reply
 
 # worker libraries
 import worker_functions.connection_aux_functions as cf
@@ -69,16 +68,6 @@ def parse_args():
         type=argparse.FileType('r')
     )
     parser.add_argument(
-        '-r', '--ftp-servers',
-        help='List of ftp servers for uploading files.',
-        nargs='+'
-    )
-    parser.add_argument(
-        '-i', '--ftp-list',
-        help='File containing list of ftp servers. One server per line.',
-        type=argparse.FileType('r')
-    )
-    parser.add_argument(
         '-u', '--user',
         help='User name for servers.',
         default='pero'
@@ -94,6 +83,15 @@ def parse_args():
         type=argparse.FileType('r')
     )
     parser.add_argument(
+        '-n', '--name',
+        help='Name for identification of queue and configuration files.'
+    )
+    parser.add_argument(
+        '-a', '--administrative-priority',
+        help='Administrative priority for given queue.',
+        type=int
+    )
+    parser.add_argument(
         '-f', '--file',
         help='File to upload. Argument can be used multiple times.',
         action='append'
@@ -102,10 +100,6 @@ def parse_args():
         '-t', '--target-file',
         help='Target path where to upload file. If \'-d/--delete\' is specified, marks remote file for deletion. Argument can be used multiple times.',
         action='append'
-    )
-    parser.add_argument(
-        '-n', '--name',
-        help='Name for identification of queue and configuration files.'
     )
     parser.add_argument(
         '-d', '--delete',
@@ -119,7 +113,40 @@ def parse_args():
         default=False,
         action='store_true'
     )
+    parser.add_argument(
+        '--update-mq-servers',
+        help='Upload server list given by \'--mq-list\'/\'--mq-servers\' to zookeeper. '
+             'Deletes given servers from zookeeper if \'--delete\' is set!',
+        default=False,
+        action='store_true'
+    )
     return parser.parse_args()
+
+def zk_upload_server_list(zk, server_list, path):
+    """
+    Uploads servers given by server_list as subnodes of path in zookeeper
+    :param zk: zookeeper connection
+    :param server_list: servers to upload
+    :param path: path where to upload server list in zookeeper (for example constants.WORKER_CONFIG_MQ_SERVERS)
+    :raise: ZookeeperError if server returns non-zero error code
+    """
+    for server in server_list:
+        server_ip_port = cf.ip_port_to_string(server)
+        logger.debug(os.path.join(path, server_ip_port))
+        zk.ensure_path(os.path.join(path, server_ip_port))
+
+def zk_delete_server_list(zk, server_list, path):
+    """
+    Deletes servers given by server_list from zookeeper configuration given by path
+    :param zk: zookeeper connection
+    :param server_list: servers to delete
+    :param path: path to server list in zookeeper
+    :raise: ZookeeperError if server returns non-zero error code
+    """
+    for server in server_list:
+        server_ip_port = cf.ip_port_to_string(server)
+        if zk.exists(os.path.join(path, server_ip_port)):
+            zk.delete(os.path.join(path, server_ip_port))
 
 def mq_connect(mq_servers):
     """
@@ -146,19 +173,6 @@ def mq_connect(mq_servers):
     
     return mq_connection
 
-def ftp_create_dir(ftp, path):
-    """
-    Creates directory path in ftp
-    :param ftp: ftp server connection
-    :param path: directory path to create
-    """
-    path = path.split('/')
-    current_path = ''
-    for directory in path:
-        if directory not in ftp.nlst(current_path):
-            ftp.sendcmd('MKD {}'.format(os.path.join(current_path, directory)))
-        current_path = os.path.join(current_path, directory)
-
 def main():
     args = parse_args()
 
@@ -183,8 +197,8 @@ def main():
         mq_servers = cf.server_list(args.mq_list)
     else:
         try:
-            mq_servers = zk.get_children(constants.WORKER_CONFIG_MQ_SERVERS)[0].decode('utf-8')
-        except Exception:
+            mq_servers = cf.server_list(zk.get_children(constants.WORKER_CONFIG_MQ_SERVERS)[0].decode('utf-8'))
+        except kazoo.exceptions.NoNodeError:
             logger.error('Failed to obtain MQ server list from zookeeper!')
             mq_servers = None
 
@@ -211,74 +225,37 @@ def main():
         zk.close()
         mq_connection.close()
         return 1
-    
-    # Get ftp server list
-    ftp_servers = None
-    if args.ftp_servers:
-        ftp_servers = cf.server_list(args.ftp_servers)
-    elif args.ftp_list:
-        ftp_servers = cf.server_list(args.frt_list)
-    else:
-        try:
-            ftp_servers = zk.get_children(constants.WORKER_CONFIG_FTP_SERVERS)[0].decode('utf-8')
-        except Exception:
-            logger.error('Failed to obtain FTP srver list from zookeeper!')
-            ftp_servers = None
-    
-    # connect to ftp
-    ftp = cf.ftp_connect(ftp_servers)
-
-    if not ftp:
-        logger.error('Failed to connect to FTP!')
-        zk.stop()
-        zk.close()
-        mq_channel.close()
-        mq_connection.close()
-        return 1
-    
-    try:
-        ftp.login(args.user, args.password)
-    except error_perm:
-        logger.error('Failed to login to FTP!')
-        zk.stop()
-        zk.close()
-        mq_channel.close()
-        mq_connection.close()
-        ftp.quit()
-        return 1
 
     if not args.delete:
-        # upload file to ftp
-        if args.file:
-            for i in range(0, len(args.file)):
-                path = args.file[i]
-                if i < len(args.target_file):
-                    target = args.target_file[i]
-                elif args.name:
-                    target = os.path.join(args.name, os.path.basename(path))
-                else:
-                    logger.error('Failed to upload file {file}, target location not specified!'.format(path))
-                    continue
-                try:
-                    # TODO
-                    # store file to subfolders
-                    with open(path, 'rb') as fd:
-                        ftp.storbinary('STOR {}'.format(target), fd)
-                except (FileNotFoundError, PermissionError) as e:
-                    logger.error('Failed to upload file {}'.format(path))
-                    logger.error('Received error: {}'.format(e))
-                else:
-                    logger.info('{file} successfully uploaded as {target}'.format(
-                        file = path,
-                        target = target
-                    ))
-
+        if args.update_mq_servers:
+            zk_upload_server_list(zk, mq_servers, constants.WORKER_CONFIG_MQ_SERVERS)
+            logger.info('MQ servers updated successfully!')
+        
         if args.name:
             # upload configuration
             if args.config:
                 zk.ensure_path(constants.QUEUE_CONFIG_TEMPLATE.format(queue_name = args.name))
                 zk.set(constants.QUEUE_CONFIG_TEMPLATE.format(queue_name = args.name), args.config.read().encode('utf-8'))
+                zk.ensure_path(constants.QUEUE_STATS_AVG_MSG_TIME_TEMPLATE.format(queue_name = args.name))
+                zk.ensure_path(constants.QUEUE_STATS_AVG_MSG_TIME_LOCK_TEMPLATE.format(queue_name = args.name))
+                zk.ensure_path(constants.QUEUE_STATS_WAITING_SINCE_TEMPLATE.format(queue_name = args.name))
+                zk.ensure_path(constants.QUEUE_CONFIG_ADMINISTRATIVE_PRIORITY_TEMPLATE.format(queue_name = args.name))
+                if not int.from_bytes(
+                    bytes=zk.get(constants.QUEUE_CONFIG_ADMINISTRATIVE_PRIORITY_TEMPLATE.format(queue_name = args.name))[0],
+                    byteorder=constants.ZK_INT_BYTEORDER
+                ):
+                    zk.set(
+                        path=constants.QUEUE_CONFIG_ADMINISTRATIVE_PRIORITY_TEMPLATE.format(queue_name = args.name),
+                        value=int.to_bytes(0, sys.getsizeof(1), constants.ZK_INT_BYTEORDER)
+                    )
                 logger.info('Configuration file uploaded successfully!')
+            
+            if args.administrative_priority:
+                zk.ensure_path(constants.QUEUE_CONFIG_ADMINISTRATIVE_PRIORITY_TEMPLATE.format(queue_name = args.name))
+                zk.set(
+                    path=constants.QUEUE_CONFIG_ADMINISTRATIVE_PRIORITY_TEMPLATE.format(queue_name = args.name),
+                    value=int.to_bytes(args.administrative_priority, sys.getsizeof(1), constants.ZK_INT_BYTEORDER)
+                )
 
             # create queue
             try:
@@ -292,25 +269,9 @@ def main():
                 logger.info('Queue {} created succesfully'.format(args.name))
     
     else:
-        # delete ftp files
-        for target in args.target_file:
-            try:
-                # TODO
-                # search in subfolders
-                file_found = False
-                for f in ftp.nlst():
-                    if target == f:
-                        file_found = True
-                if file_found:
-                    ftp.delete(target)
-                    logger.info('File {} deleted'.format(target))
-                else:
-                    logger.warn('File {} not found!'.format(target))
-            except error_perm:
-                logger.error('Insufficient permissions to delete {}!'.format(target))
-            except error_reply as e:
-                logger.error('Failed to delete file {}!'.format(target))
-                logger.error('Received error: {}'.format(e))
+        if args.update_mq_servers:
+            zk_delete_server_list(zk, mq_servers, constants.WORKER_CONFIG_MQ_SERVERS)
+            logger.info('MQ servers deleted successfully!')
         
         if args.name:
             # delete configuration
@@ -337,14 +298,6 @@ def main():
         mq_channel.close()
     if mq_connection.is_open:
         mq_connection.close()
-    
-    # disconnect from ftp
-    if ftp:
-        try:
-            ftp.quit()
-        except AttributeError:
-            # connection is closed
-            pass
 
     return 0
 

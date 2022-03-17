@@ -13,6 +13,7 @@ import json  # configuration loading
 import traceback  # logging
 import configparser
 import threading
+import datetime
 from ftplib import FTP, all_errors, error_perm
 
 # load image and data for processing
@@ -33,7 +34,7 @@ from google.protobuf.timestamp_pb2 import Timestamp
 from kazoo.client import KazooClient
 from kazoo.handlers.threading import KazooTimeoutError
 from kazoo.protocol.states import KazooState
-import kazoo.exceptions as zk_exceptions
+import kazoo.exceptions
 
 # constants
 import worker_functions.constants as constants
@@ -43,7 +44,7 @@ import worker_functions.connection_aux_functions as cf
 # === Global config ===
 
 # setup logging (required by kazoo)
-log_formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
+log_formatter = logging.Formatter('%(asctime)s %(levelname)s WORKER: %(message)s')
 
 stderr_handler = logging.StreamHandler()
 stderr_handler.setFormatter(log_formatter)
@@ -166,13 +167,17 @@ class Worker(object):
         # worker status
         self.status = constants.STATUS_STARTING
         self.queue = ''
-        self.enabled = True
         self.queue_config_version = -1
 
         # processing lock
         self.processing_lock = threading.Lock()
         self.switch_queue_lock = threading.Lock()
         self.status_lock = threading.Lock()
+
+        # queue statistics
+        self.queue_stats_processed_messages = 0  # number of processed messages
+        self.queue_stats_total_processing_time = 0  # time spend on processing messages
+        self.queue_stats_lock = None  # lock for accessing the stats in zookeeper
 
     def clean_tmp_files(self, path=None):
         """
@@ -256,7 +261,7 @@ class Worker(object):
             try:
                 self.zk.stop()
                 self.zk.close()
-            except zk_exceptions.KazooException as e:
+            except kazoo.exceptions.KazooException as e:
                 logger.error('Failed to close zookeeper connection!')
                 logger.error('Received error: {}'.format(traceback.format_exc()))
 
@@ -306,12 +311,25 @@ class Worker(object):
         # and block processing of all new requests from this queue
         self.processing_lock.acquire()
 
-        self.update_status(constants.STATUS_RECONFIGURING)
-
-        # stop processing of cureent queue
+        # stop processing of cureent queue and report statistics
         self.stop_processing()
+        self.update_status(constants.STATUS_RECONFIGURING)
+        self.update_queue_statistics()
 
+        # switch queue
         self.queue = queue
+        try:
+            self.queue_stats_lock = self.zk.get(constants.QUEUE_STATS_AVG_MSG_TIME_LOCK_TEMPLATE.format(
+                queue_name = queue
+            ))
+        except kazoo.exceptions.ZookeeperError as e:
+            logger.error('Failed to get lock for average message time statistics for queue {}!'.format(
+                queue
+            ))
+            self.update_status(constants.STATUS_FAILED)
+            self.switch_queue_lock.release()
+            self.processing_lock.release()
+            return
 
         # load OCR data and configuration
         try:
@@ -323,10 +341,10 @@ class Worker(object):
             ))
             logger.error('{}'.format(traceback.format_exc()))
         else:
-            # on success start processing of new queue
+            self.update_status(constants.STATUS_IDLE)
+            # start processing of new queue
             self.mq_channel_create(self.mq_connection)
         finally:
-            self.update_status(constants.STATUS_IDLE)
             # unblock processing and switching to new queue
             self.switch_queue_lock.release()
             self.processing_lock.release()
@@ -343,6 +361,54 @@ class Worker(object):
             logger.info('Shutdown signal received!')
             self.update_status(constants.STATUS_DEAD)
             self.mq_disconnect()
+    
+    def update_queue_statistics(self):
+        """
+        Updates statistics of queue in zookeeper
+        """
+        if not self.queue_stats_processed_messages:
+            return
+        
+        # get averate processing time for current queue
+        avg_msg_time = self.queue_stats_total_processing_time / self.queue_stats_processed_messages
+        with self.queue_stats_lock:
+            try:
+                # get queue average processing time from zookeeper
+                zk_msg_time = self.zk.get(constants.QUEUE_STATS_AVG_MSG_TIME_TEMPLATE.format(
+                    queue_name = self.queue
+                ))[0].decode('utf-8')
+
+                # calculate new queue average processing time
+                if zk_msg_time:
+                    zk_msg_time = float.fromhex(zk_msg_time)
+                    avg_msg_time = avg_msg_time + zk_msg_time / 2
+                
+                # update queue statistics in zookeeper
+                self.zk.set(
+                    path=constants.QUEUE_STATS_AVG_MSG_TIME_TEMPLATE.format(queue_name = self.queue),
+                    value=float(avg_msg_time).hex().encode('utf-8')
+                )
+
+                # reset counters
+                self.queue_stats_total_processing_time = self.queue_stats_processed_messages = 0
+
+            except kazoo.exceptions.ZookeeperError:
+                logger.error(
+                    'Failed to update average processing time for queue {} due to zookeeper error!'
+                    .format(self.queue)
+                )
+                logger.error('Received error:\n{}'.format(traceback.format_exc()))
+            except ValueError:
+                logger.error(
+                    'Failed to update average processing time for queue {} due to wrong number format in zookeeper!'
+                    .format(self.queue)
+                )
+            except Exception:
+                logger.error(
+                    'Failed to update average processing time for queue {} due to unknown error!'
+                    .format(self.queue)
+                )
+                logger.error('Received error:\n{}'.format(traceback.format_exc()))
     
     def gen_id(self):
         """
@@ -372,7 +438,7 @@ class Worker(object):
         try:
             self.mq_servers = self.zk.get_children(
                 constants.WORKER_CONFIG_MQ_SERVERS)[0].decode('utf-8')
-        except zk_exceptions.NoNodeError:
+        except kazoo.exceptions.NoNodeError:
             logger.error('Failed to obtain MQ server list')
     
     def update_status(self, status):
@@ -390,6 +456,8 @@ class Worker(object):
             self.status_lock.release()
             return
         
+        # TODO
+        # catch errors
         self.zk.set(constants.WORKER_STATUS_TEMPLATE.format(
             worker_id = self.worker_id),
             self.status.encode('utf-8')
@@ -402,7 +470,11 @@ class Worker(object):
         :raise: NodeExistsError if worker with this id is already defined in zookeeper
         :raise: ZookeeperError if server returns non zero value
         """
-        # set worker id
+        # TODO
+        # catch errors
+        # change create to ensure path
+
+        # set worker status
         self.zk.create(
             constants.WORKER_STATUS_TEMPLATE.format(
                 worker_id = self.worker_id
@@ -410,27 +482,18 @@ class Worker(object):
             self.status.encode('utf-8'),
             makepath=True
         )
-        # set worker queue
+        # initialize worker queue path
         self.zk.create(constants.WORKER_QUEUE_TEMPLATE.format(
             worker_id = self.worker_id
         ))
-        #set if worker is enabled or disabled
+        # set worker to enabled state
         self.zk.create(constants.WORKER_ENABLED_TEMPLATE.format(
             worker_id = self.worker_id
         ), 'true'.encode('utf-8'))
-    
-    def recover_status(self):
-        """
-        Recovers worker to previous state after reconnecting to zookeeper
-        :raise: ZookeeperError if server returns non zero value
-        """
-        self.update_status(constants.STATUS_STARTING)
-        self.queue = self.zk.get(constants.WORKER_QUEUE_TEMPLATE.format(
+        # initialize worker unlock time path
+        self.zk.create(constants.WORKER_UNLOCK_TIME.format(
             worker_id = self.worker_id
-        )).decode('utf-8')
-        self.enabled = self.zk.get(constatns.WORKER_ENABLED_TEMPLATE.format(
-            worker_id = self.worker_id
-        )).decode('utf-8')
+        ))
     
     def create_tmp_dir(self):
         """
@@ -483,7 +546,8 @@ class Worker(object):
         self.mq_connection = pika.SelectConnection(
             pika.ConnectionParameters(
                 host=self.mq_server['ip'],
-                port=self.mq_server['port'] if self.mq_server['port'] else pika.ConnectionParameters.DEFAULT_PORT
+                port=self.mq_server['port'] if self.mq_server['port'] else pika.ConnectionParameters.DEFAULT_PORT,
+                heartbeat=5
             ),
             on_open_callback=self.mq_connection_open_ok,
             on_open_error_callback=self.mq_connection_open_error,
@@ -517,7 +581,7 @@ class Worker(object):
         :param reason: reason why was connection closed
         """
         logger.warning('Connection to message broker closed, reason: {}'.format(reason))
-        self.update_status(constants.STATUS_DEAD)  # TODO - report status
+        self.update_status(constants.STATUS_DEAD)
 
     def mq_channel_create(self, connection):
         """
@@ -584,6 +648,7 @@ class Worker(object):
             channel.basic_publish('', output_stage, processing_request.SerializeToString())
             channel.basic_ack(delivery_tag = method.delivery_tag)
         except Exception:
+            # TODO - handle same way as runtime error!
             logger.error('Failed to process request {request_id} using stage {stage}!'.format(
                 request_id = processing_request.uuid,
                 stage = current_stage
@@ -602,6 +667,8 @@ class Worker(object):
             channel.basic_ack(delivery_tag = method.delivery_tag)
         finally:
             self.update_status(constants.STATUS_IDLE)
+            if self.queue_stats_processed_messages > 10:
+                self.update_queue_statistics()
             self.processing_lock.release()
 
             # wait until canceled during queue switching
@@ -616,11 +683,14 @@ class Worker(object):
         """
         # TODO
         # add logger output to message log
+
+        start_time = datetime.datetime.now(datetime.timezone.utc)
         # gen log
         log = processing_request.logs.add()
         log.host_id = self.worker_id
         log.stage = processing_request.processing_stages[0]
-        Timestamp.GetCurrentTime(log.start)
+        #Timestamp.GetCurrentTime(log.start)
+        Timestamp.FromDatetime(log.start, start_time)
 
         # load data
         img = None
@@ -681,9 +751,14 @@ class Worker(object):
             logits.content = logits_out
         
         # log end of processing
-        Timestamp.GetCurrentTime(log.end)
-        # TODO - log content
-        #log.log = "Lorem Ipsum"
+        #Timestamp.GetCurrentTime(log.end)
+        end_time = datetime.datetime.now(datetime.timezone.utc)
+        Timestamp.FromDatetime(log.end, end_time)
+
+        # worker statistics
+        spend_time = (end_time - start_time).total_seconds()
+        self.queue_stats_total_processing_time += spend_time
+        self.queue_stats_processed_messages += 1
 
     def ocr_load(self, name):
         """
@@ -701,10 +776,10 @@ class Worker(object):
 
         # get config from zookeeper and save to file
         try:
-            config_content = self.zk.get(constants.PROCESSING_CONFIG_TEMPLATE.format(config_name=name))[0].decode('utf-8')
-        except (zk_exceptions.NoNodeError, zk_exceptions.ZookeeperError) as e:
+            config_content = self.zk.get(constants.QUEUE_CONFIG_TEMPLATE.format(queue_name=name))[0].decode('utf-8')
+        except (kazoo.exceptions.NoNodeError, kazoo.exceptions.ZookeeperError) as e:
             self.update_status(constants.STATUS_FAILED)
-            logger.error('Failed to get configuration for processing phase {}'.format(name))
+            logger.error('Failed to get configuration for queue {}'.format(name))
             # stop reconfiguration if config can't be downloaded
             raise
         with open(config_file_name, 'w') as config_file:
@@ -806,13 +881,10 @@ class Worker(object):
         # initialize worker status and sync with zookeeper
         try:            
             self.init_worker_status()
-        except zk_exceptions.NodeExistsError:
-            logger.info('Recovering failed node!')
-            try:
-                self.recover_status()
-            except:
-                logger.critical('Setting up zookeeper status failed!')
-                return 1
+        except kazoo.exceptions.ZookeeperError:
+            logger.critical('Failed to register worker in zookeeper!')
+            logger.critical('Received error:\n{}'.format(traceback.format_exc()))
+            return 1
         
         # setup tmp directory
         if not self.tmp_directory:

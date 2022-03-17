@@ -281,9 +281,13 @@ class Publisher:
             logger.info(f'Assigned page uuid: {message.page_uuid}')
 
             try:
-                self.mq_channel.basic_publish('', stages[0], message.SerializeToString(), properties=pika.BasicProperties(
-                    delivery_mode=2
-                ))
+                self.mq_channel.basic_publish('', stages[0], message.SerializeToString(),
+                    properties=pika.BasicProperties(delivery_mode=2),
+                    mandatory=True
+                )
+            except pika.exceptions.UnroutableError as e:
+                logger.error('Message was rejected by the MQ broker!')
+                logger.error('Received error: {}'.format(e))
             except pika.exceptions.AMQPError as e:
                 logger.error('Message was not confirmed by the MQ broker!')
                 logger.error('Received error: {}'.format(e))
