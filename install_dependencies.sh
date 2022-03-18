@@ -19,9 +19,7 @@ for line in $tmp_dependencies; do
     fi
 done
 
-if [ "$1" = 'venv' ]; then
-    dependencies="$dependencies python3-venv"
-fi
+dependencies="$dependencies python3-venv"
 
 echo 'Installing dependencies via apt'
 if [ 0 -ne "$(id -u)" ]; then
@@ -38,11 +36,9 @@ if [ $rc -ne 0 ]; then
 fi
 
 echo 'Installing dependencies via pip'
-if [ "$1" = 'venv' ]; then
-    python3 -m venv .venv
-    . ./.venv/bin/activate
-    pip install --upgrade pip
-fi
+python3 -m venv .venv
+. ./.venv/bin/activate
+pip install --upgrade pip
 pip3 install --upgrade --requirement "$python_dep"
 
 rc=$?
