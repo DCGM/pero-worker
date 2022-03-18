@@ -237,7 +237,6 @@ def main():
                 zk.ensure_path(constants.QUEUE_CONFIG_TEMPLATE.format(queue_name = args.name))
                 zk.set(constants.QUEUE_CONFIG_TEMPLATE.format(queue_name = args.name), args.config.read().encode('utf-8'))
                 zk.ensure_path(constants.QUEUE_STATS_AVG_MSG_TIME_TEMPLATE.format(queue_name = args.name))
-                zk.ensure_path(constants.QUEUE_STATS_AVG_MSG_TIME_LOCK_TEMPLATE.format(queue_name = args.name))
                 zk.ensure_path(constants.QUEUE_STATS_WAITING_SINCE_TEMPLATE.format(queue_name = args.name))
                 zk.ensure_path(constants.QUEUE_CONFIG_ADMINISTRATIVE_PRIORITY_TEMPLATE.format(queue_name = args.name))
                 if not int.from_bytes(

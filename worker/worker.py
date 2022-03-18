@@ -319,9 +319,10 @@ class Worker(object):
         # switch queue
         self.queue = queue
         try:
-            self.queue_stats_lock = self.zk.get(constants.QUEUE_STATS_AVG_MSG_TIME_LOCK_TEMPLATE.format(
-                queue_name = queue
-            ))
+            self.queue_stats_lock = self.zk.Lock(
+                constants.QUEUE_STATS_AVG_MSG_TIME_LOCK_TEMPLATE.format(queue_name = queue),
+                identifier=self.worker_id
+            )
         except kazoo.exceptions.ZookeeperError as e:
             logger.error('Failed to get lock for average message time statistics for queue {}!'.format(
                 queue
@@ -371,6 +372,7 @@ class Worker(object):
         
         # get averate processing time for current queue
         avg_msg_time = self.queue_stats_total_processing_time / self.queue_stats_processed_messages
+        logger.debug('Updating queue statistics for queue {}'.format(self.queue))
         with self.queue_stats_lock:
             try:
                 # get queue average processing time from zookeeper
@@ -546,8 +548,7 @@ class Worker(object):
         self.mq_connection = pika.SelectConnection(
             pika.ConnectionParameters(
                 host=self.mq_server['ip'],
-                port=self.mq_server['port'] if self.mq_server['port'] else pika.ConnectionParameters.DEFAULT_PORT,
-                heartbeat=5
+                port=self.mq_server['port'] if self.mq_server['port'] else pika.ConnectionParameters.DEFAULT_PORT
             ),
             on_open_callback=self.mq_connection_open_ok,
             on_open_error_callback=self.mq_connection_open_error,

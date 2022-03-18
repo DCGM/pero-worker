@@ -245,7 +245,7 @@ class WorkerWatchdog(ZkClient):
 
             n_workers = 0
             for worker in worker_stats:
-                if worker_stats[worker]['queue'] == queue:
+                if worker_stats[worker]['queue'] == queue['name']:
                     n_workers += 1
 
             if not queue_zk_stats[queue['name']]['waiting_since']:
@@ -253,7 +253,11 @@ class WorkerWatchdog(ZkClient):
             elif n_workers > 0:  # queue is not waiting for processing
                 waiting_time = 0
             else:
-                waiting_time = (self.last_sample_time - datetime.datetime.fromisoformat(queue_zk_stats[queue['name']]['waiting_since'])).total_seconds()
+                try:
+                    waiting_time = (self.last_sample_time - datetime.datetime.fromisoformat(queue_zk_stats[queue['name']]['waiting_since'])).total_seconds()
+                except Exception:
+                    self.logger.warn('Failed to parse waiting time of queue {}, schduling might not be accurate!'.format(queue['name']))
+                    waiting_time = 0
 
             # calcuate priority for the queue
             queue_priorities[queue['name']] = self.get_queue_parametric_priority(
@@ -334,17 +338,6 @@ class WorkerWatchdog(ZkClient):
                 )
                 del worker_stats[worker]
                 continue
-
-            
-            if worker_stats[worker]['unlock_time']:
-                try:
-                    worker_stats[worker]['unlock_time'] = datetime.datetime.fromisoformat(
-                        worker_stats[worker]['unlock_time']
-                    )
-                except ValueError:
-                    self.logger.warn('Worker {} has wrong \'unlock_time\' format!'.format(worker))
-                    del worker_stats[worker]
-                    continue
         
         if not worker_stats:
             self.logger.info('No running workers found!')
@@ -359,8 +352,6 @@ class WorkerWatchdog(ZkClient):
         :param worker_stats: dictionary with stats of workers obtained from zookeeper
         :param queue_stats: dictionary with stats of queues obtained from zookeeper
         """
-        # TODO
-        # calculate unlock time offset
         unlock_time_offset = queue_stats[queue]['avg_msg_time'] * self.minimal_message_number + self.minimal_reconfiguration_time
         worker_stats[worker]['unlock_time'] = (self.last_sample_time + datetime.timedelta(seconds=unlock_time_offset)).isoformat()
         worker_stats[worker]['queue'] = queue
@@ -395,15 +386,18 @@ class WorkerWatchdog(ZkClient):
             if queue['messages'] and queue['name'] not in queues_with_messages:
                 queues_with_messages.append(queue['name'])
         
+        self.logger.debug('Processed queues: {}'.format(processed_queues))
+        self.logger.debug('Queues with messages: {}'.format(queues_with_messages))
         # set waiting queues 'waiting_since' to time when statistics were downloaded
         for queue in queue_zk_stats:
             if queue in queues_with_messages and queue not in processed_queues:
-                queue_zk_stats[queue]['waiting_since'] = self.last_sample_time.isoformat()
-                queue_zk_stats[queue]['modified'] = True
-                self.logger.info('Setting queue {queue} to waiting since {time}'.format(
-                    queue = queue,
-                    time = self.last_sample_time.isoformat()
-                ))
+                if not queue_zk_stats[queue]['waiting_since']:
+                    queue_zk_stats[queue]['waiting_since'] = self.last_sample_time.isoformat()
+                    queue_zk_stats[queue]['modified'] = True
+                    self.logger.info('Setting queue {queue} to waiting since {time}'.format(
+                        queue = queue,
+                        time = self.last_sample_time.isoformat()
+                    ))
 
     def apply_changes(self, worker_stats, queue_stats):
         """
@@ -481,12 +475,16 @@ class WorkerWatchdog(ZkClient):
 
         if not worker_stats:
             return
-
-        self.logger.debug('')
+        
+        self.logger.debug('Worker statistics:\n{}'.format(json.dumps(worker_stats, indent=4)))
 
         # get queue priorities
         queue_priorities = self.get_priorities(queue_zk_stats, queue_mq_stats, worker_stats)
         self.logger.debug('Calculated queue priorities:\n{}'.format(json.dumps(queue_priorities, indent=4)))
+
+        if not queue_priorities[list(queue_priorities.keys())[0]]:
+            self.logger.info('All queues are empty, skipping scheduling')
+            return
 
         # === calculate new system state ===
         # get list of free workers
@@ -522,19 +520,27 @@ class WorkerWatchdog(ZkClient):
             queue_priorities_reverse = dict(sorted(queue_priorities.items(), key=lambda item: item[1]))
             for queue in queue_priorities_reverse:
                 for worker in worker_stats:
+                    try:
+                        unlock_time = datetime.datetime.fromisoformat(worker_stats[worker]['unlock_time'])
+                    except Exception:
+                        self.logger.warn('Failed to parse worker unlock time of worker {}, scheduling might be inaccurate!'.format(worker))
+                        unlock_time = self.last_sample_time
+                    
                     # check if worker can switch
-                    if (worker_stats[worker]['unlock_time'] - self.last_sample_time).total_seconds() > 0:
+                    if (unlock_time - self.last_sample_time).total_seconds() > 0:
                         continue
+
                     # switch worker to prioritized queue
                     if worker_stats[worker]['queue'] == queue:
                         self.switch_worker_to_queue(
                             worker=worker,
-                            queue=queue,
+                            queue=list(queue_priorities.keys())[0],
                             worker_stats=worker_stats,
                             queue_stats=queue_zk_stats
                         )
                         worker_switched = True
                         break
+                    
                 if worker_switched:
                     break
         
