@@ -48,4 +48,10 @@ if [ $rc -ne 0 ]; then
     exit $rc
 fi
 
+if [ -z "$PYTHONPATH" ]; then
+    echo 'export PYTHONPATH="$(dirname $VIRTUAL_ENV)/libs:$(dirname $VIRTUAL_ENV)/pero-ocr"' >> ./.venv/bin/activate
+else
+    echo 'export PYTHONPATH="$PYTHONPATH:$(dirname $VIRTUAL_ENV)/libs:$(dirname $VIRTUAL_ENV)/pero-ocr"' >> ./.venv/bin/activate
+fi
+
 exit 0
