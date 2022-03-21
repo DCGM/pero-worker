@@ -62,8 +62,8 @@ def dir_path(path):
     """
     Check if path is directory path
     :param path: path to directory
-    :return: path if path is direcotry path
-    :raise: ArgumentTypeError if path is not direcotry path
+    :return: path if path is directory path
+    :raise: ArgumentTypeError if path is not directory path
     """
     if os.path.isdir(path):
         return path
@@ -147,6 +147,13 @@ class Worker(object):
         self.mq_servers = mq_servers
         self.ftp_servers = ftp_servers
 
+        # locks for config updates
+        self.mq_server_lock = threading.Lock()  # guards mq_servers list and mq_connection_retry count
+        self.ftp_servers_lock = threading.Lock()
+
+        # number of mq connection retry
+        self.mq_connection_retry = 0
+
         # configuration for the page parser and selected orc
         self.config = None
         self.ocr = None
@@ -168,6 +175,7 @@ class Worker(object):
         self.status = constants.STATUS_STARTING
         self.queue = ''
         self.queue_config_version = -1
+        self.enabled = True
 
         # processing lock
         self.processing_lock = threading.Lock()
@@ -205,7 +213,7 @@ class Worker(object):
         for file_name in os.listdir(path):
             self.clean_tmp_files(os.path.join(path, file_name))
         
-        # remove temp direcotry
+        # remove temp directory
         os.rmdir(path)
 
     def __del__(self):
@@ -360,8 +368,28 @@ class Worker(object):
         enabled = data.decode('utf-8').lower()
         if enabled != 'true':
             logger.info('Shutdown signal received!')
+            self.enabled = False
             self.update_status(constants.STATUS_DEAD)
             self.mq_disconnect()
+    
+    def zk_callback_update_mq_server_list(self, servers):
+        """
+        Updates list of mq broker servers
+        :param servers: list of servers
+        """
+        self.mq_server_lock.acquire()
+        self.mq_servers = cf.server_list(servers)
+        self.mq_connection_retry = 0
+        self.mq_server_lock.release()
+    
+    def zk_callback_update_ftp_server_list(self, servers):
+        """
+        Updates list of ftp servers
+        :param servers: list of servers
+        """
+        self.ftp_servers_lock.acquire()
+        self.ftp_servers = cf.server_list(servers)
+        self.ftp_servers_lock.release()
     
     def update_queue_statistics(self):
         """
@@ -425,23 +453,6 @@ class Worker(object):
             worker_id = self.worker_id
         )):
             self.worker_id = uuid.uuid4().hex
-    
-    def get_mq_servers(self):
-        """
-        Updates list of message broker servers
-        :raise: ZookeeperError if zookeeper returns non zero error code
-        """
-        if self.zk.state != KazooState.CONNECTED:
-            logger.error('Failed to obtain MQ server list. Zookeeper connection lost!')
-            return
-        
-        # TODO
-        # add parsing
-        try:
-            self.mq_servers = self.zk.get_children(
-                constants.WORKER_CONFIG_MQ_SERVERS)[0].decode('utf-8')
-        except kazoo.exceptions.NoNodeError:
-            logger.error('Failed to obtain MQ server list')
     
     def update_status(self, status):
         """
@@ -520,28 +531,39 @@ class Worker(object):
             self.mq_connection.close()
             self.mq_connection.ioloop.stop()
 
-    def mq_connect(self, reconnect=False):
+    def mq_connect(self):
         """
         Connect to message broker
         """
-        # TODO
-        # add port configuration
+        # prevent mq server list update during connecting
+        self.mq_server_lock.acquire()
+
+        if not self.mq_servers:
+            logger.error('No MQ servers available!')
+            self.update_status(constants.STATUS_FAILED)
+            self.mq_server_lock.release()
+            return
         
-        if reconnect:  # try all mq servers from begining
-            self.mq_server = None
-        
+        if self.mq_connection_retry == len(self.mq_servers):
+            logger.error('Failed to connect to any MQ servers!')
+            self.update_status(constants.STATUS_FAILED)
+            self.mq_server_lock.release()
+            return
+
         # select server to connect to
-        for i in range(0, len(self.mq_servers)):
-            if not self.mq_server:
-                self.mq_server = self.mq_servers[i]
-                break
-            elif self.mq_server == self.mq_servers[i]:
-                if i+1 < len(self.mq_servers):
-                    self.mq_server = self.mq_servers[i+1]
-                else:
-                    logger.error('Failed to connect to any of the MQ servers!')
-                    self.mq_server = None
-                    return
+        if not self.mq_server:
+            self.mq_server = self.mq_servers[0]
+        elif self.mq_server == self.mq_servers[-1]:
+            self.mq_server = self.mq_servers[0]
+        else:
+            for i in range(0, len(self.mq_servers)):
+                if self.mq_server == self.mq_servers[i]:
+                    self.mq_server = self.mq_servers[i + 1]
+                    break
+        
+        self.mq_connection_retry += 1
+
+        self.mq_server_lock.release()
         
         # connect to selected mq server
         logger.info('Connecting to MQ server {}'.format(cf.ip_port_to_string(self.mq_server)))
@@ -561,6 +583,9 @@ class Worker(object):
         :param connection: message broker connection - same as self.mq_connection
         """
         logger.info('Connection to MQ establisted successfully')
+        self.mq_server_lock.acquire()
+        self.mq_connection_retry = 0
+        self.mq_server_lock.release()
     
     def mq_connection_open_error(self, connection, error):
         """
@@ -568,12 +593,8 @@ class Worker(object):
         :param connection: broker connection - same as self.mq_connection
         :param error: exception generated on close
         """
-        logger.error('Connection to message broker failed!')
-        logger.error(traceback.format_exc())
-        self.update_status(constants.STATUS_FAILED)
-        # TODO
-        # reconnect
-        self.mq_connection.ioloop.stop()
+        logger.error('Connection to MQ failed to open! Received error: {}'.format(error))
+        self.mq_connect()
     
     def mq_connection_close(self, connection, reason):
         """
@@ -581,8 +602,11 @@ class Worker(object):
         :param connection: broker connection - same as self.mq_connection
         :param reason: reason why was connection closed
         """
-        logger.warning('Connection to message broker closed, reason: {}'.format(reason))
-        self.update_status(constants.STATUS_DEAD)
+        logger.warning('Connection to MQ closed, reason: {}'.format(reason))
+        if not self.enabled:
+            self.update_status(constants.STATUS_DEAD)
+        else:
+            self.mq_connect()
 
     def mq_channel_create(self, connection):
         """
@@ -892,7 +916,30 @@ class Worker(object):
             self.tmp_directory = f'/tmp/pero-worker-{self.worker_id}'
         self.create_tmp_dir()
 
+        # get MQ and FTP server list before connecting to MQ
+        try:
+            self.zk_callback_update_mq_server_list(
+                self.zk.get_children(constants.WORKER_CONFIG_MQ_SERVERS)
+            )
+            self.zk_callback_update_ftp_server_list(
+                self.zk.get_children(constants.WORKER_CONFIG_FTP_SERVERS)
+            )
+        except kazoo.exceptions.ZookeeperError:
+            logger.critical('Failed to get lists of MQ and FTP servers!')
+            logger.critical('Received error:\n{}'.format(traceback.format_exc()))
+            return 1
+
         # register zookeeper callbacks:
+        # update MQ server list
+        self.zk.ChildrenWatch(
+            path=constants.WORKER_CONFIG_MQ_SERVERS,
+            func=self.zk_callback_update_mq_server_list
+        )
+        # update ftp server list
+        self.zk.ChildrenWatch(
+            path=constants.WORKER_CONFIG_FTP_SERVERS,
+            func=self.zk_callback_update_ftp_server_list
+        )
         # switch queue callback
         self.zk.DataWatch(
             path=constants.WORKER_QUEUE_TEMPLATE.format(worker_id=self.worker_id),

@@ -560,9 +560,10 @@ class WorkerWatchdog(ZkClient):
         """
         self.mq_servers_lock.acquire()
         self.mq_servers_monitoring = cf.server_list(servers)
-        # change port of each server from AMQP to monitoring
+        # set default ports
         for server in self.mq_servers_monitoring:
-            server['port'] = 15672
+            if not server['port']:
+                server['port'] = 15672
         self.mq_servers_lock.release()
 
     def run(self):
@@ -578,9 +579,9 @@ class WorkerWatchdog(ZkClient):
             return 1
         
         # register updater for mq server list
-        self.zk.ensure_path(constants.WORKER_CONFIG_MQ_SERVERS)
+        self.zk.ensure_path(constants.WORKER_CONFIG_MQ_MONITORING_SERVERS)
         self.zk.ChildrenWatch(
-            path=constants.WORKER_CONFIG_MQ_SERVERS,
+            path=constants.WORKER_CONFIG_MQ_MONITORING_SERVERS,
             func=self.zk_callback_update_mq_server_list
         )
 

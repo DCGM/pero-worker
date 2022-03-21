@@ -15,6 +15,7 @@ import worker_functions.constants as constants
 import pika
 
 # zookeeper
+import kazoo
 from kazoo.client import KazooClient
 from kazoo.handlers.threading import KazooTimeoutError
 
@@ -34,8 +35,8 @@ def dir_path(path):
     """
     Check if path is directory path
     :param path: path to directory
-    :return: path if path is direcotry path
-    :raise: ArgumentTypeError if path is not direcotry path
+    :return: path if path is directory path
+    :raise: ArgumentTypeError if path is not directory path
     """
     if not os.path.exists(path):
         raise argparse.ArgumentTypeError(f"error: {path} is not a valid path")    
@@ -66,6 +67,16 @@ def parse_args():
         '-m', '--mq-list',
         help='File containing list of message queue servers. One server per line.',
         type=argparse.FileType('r')
+    )
+    parser.add_argument(
+        '--ftp-servers',
+        help='List of ftp servers to upload to zookeeper.',
+        nargs='+'
+    )
+    parser.add_argument(
+        '--monitoring-servers',
+        help='List of MQ monitring servers to upload to zookeeper.',
+        nargs='+'
     )
     parser.add_argument(
         '-u', '--user',
@@ -117,6 +128,21 @@ def parse_args():
         '--update-mq-servers',
         help='Upload server list given by \'--mq-list\'/\'--mq-servers\' to zookeeper. '
              'Deletes given servers from zookeeper if \'--delete\' is set!',
+        default=False,
+        action='store_true'
+    )
+    parser.add_argument(
+        '--update-ftp-servers',
+        help='Upload server list given by \'--ftp-servers\' to zookeeper. '
+             'Delete given server from zookeeper if \'--delete\' is set!',
+        default=False,
+        action='store_true'
+    )
+    parser.add_argument(
+        '--update-monitoring-servers',
+        help='Upload MQ monitoring servers - given by \'--mq-list\'/\'--mq-servers\' with port changed to default management port to zookeeper. '
+             'If \'--monitoring-servers\' is given, list of monitoring servers is used instead, port is not changed in this case. '
+             'If \'--delete\' is set, deletes servers from zookeper instead!',
         default=False,
         action='store_true'
     )
@@ -197,7 +223,7 @@ def main():
         mq_servers = cf.server_list(args.mq_list)
     else:
         try:
-            mq_servers = cf.server_list(zk.get_children(constants.WORKER_CONFIG_MQ_SERVERS)[0].decode('utf-8'))
+            mq_servers = cf.server_list(zk.get_children(constants.WORKER_CONFIG_MQ_SERVERS))
         except kazoo.exceptions.NoNodeError:
             logger.error('Failed to obtain MQ server list from zookeeper!')
             mq_servers = None
@@ -225,12 +251,28 @@ def main():
         zk.close()
         mq_connection.close()
         return 1
+    
+    if args.update_monitoring_servers:
+        if args.monitoring_servers:
+            monitoring_servers = cf.server_list(args.monitoring_servers)
+        else:
+            monitoring_servers = cf.server_list(args.mq_servers)
+            for server in monitoring_servers:
+                server['port'] = None
 
     if not args.delete:
         if args.update_mq_servers:
             zk_upload_server_list(zk, mq_servers, constants.WORKER_CONFIG_MQ_SERVERS)
             logger.info('MQ servers updated successfully!')
         
+        if args.update_ftp_servers:
+            zk_upload_server_list(zk, cf.server_list(args.ftp_servers), constants.WORKER_CONFIG_FTP_SERVERS)
+            logger.info('FTP servers updated successfully!')
+
+        if args.update_monitoring_servers:
+            zk_upload_server_list(zk, monitoring_servers, constants.WORKER_CONFIG_MQ_MONITORING_SERVERS)
+            logger.info('MQ monitoring servers updated successfully!')
+
         if args.name:
             # upload configuration
             if args.config:
@@ -271,6 +313,14 @@ def main():
         if args.update_mq_servers:
             zk_delete_server_list(zk, mq_servers, constants.WORKER_CONFIG_MQ_SERVERS)
             logger.info('MQ servers deleted successfully!')
+        
+        if args.update_ftp_servers:
+            zk_delete_server_list(zk, cf.server_list(args.ftp_servers), constants.WORKER_CONFIG_FTP_SERVERS)
+            logger.info('FTP servers deleted successfully!')
+        
+        if args.update_monitoring_servers:
+            zk_delete_server_list(zk, monitoring_servers, constants.WORKER_CONFIG_MQ_MONITORING_SERVERS)
+            logger.info('MQ monitoring servers deleted successfully!')
         
         if args.name:
             # delete configuration

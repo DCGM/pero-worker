@@ -15,8 +15,7 @@ WORKER_UNLOCK_TIME = WORKER_STATUS_ID_TEMPLATE + '/unlock_time'  # time after wh
 
 WORKER_CONFIG = PERO_PATH + '/worker/config'  # configs for all workers
 WORKER_CONFIG_MQ_SERVERS = WORKER_CONFIG + '/mq_servers'
-# TODO
-# add monitoring server ports to MQ servers
+WORKER_CONFIG_MQ_MONITORING_SERVERS = WORKER_CONFIG + '/mq_monitoring_servers'
 WORKER_CONFIG_FTP_SERVERS = WORKER_CONFIG + '/ftp_servers'
 WORKER_CONFIG_REDIS_SERVERS = WORKER_CONFIG + '/redis_servers'
 

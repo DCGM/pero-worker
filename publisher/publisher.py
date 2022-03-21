@@ -12,6 +12,9 @@ import uuid
 # connection auxiliary formating functions
 import worker_functions.connection_aux_functions as cf
 
+# config
+import worker_functions.constants as constants
+
 # MQ
 import pika
 
@@ -39,8 +42,8 @@ def dir_path(path):
     """
     Check if path is directory path
     :param path: path to directory
-    :return: path if path is direcotry path
-    :raise: ArgumentTypeError if path is not direcotry path
+    :return: path if path is directory path
+    :raise: ArgumentTypeError if path is not directory path
     """
     if not os.path.exists(path):
         raise argparse.ArgumentTypeError(f"error: {path} is not a valid path")    
@@ -84,7 +87,8 @@ def parse_args():
     parser.add_argument(
         '-i', '--images',
         help='List of images to upload.',
-        nargs='+'
+        nargs='+',
+        default=[]
     )
     parser.add_argument(
         '-t', '--stages',
@@ -238,8 +242,9 @@ class Publisher:
         :return: list of files in directory
         """
         files = []
-        if os.path.exists(directory) and os.path.isdir(directory):
+        if not os.path.exists(directory) or not os.path.isdir(directory):
             logger.error(f'{directory} is not a directory!')
+            return files
         
         for f in os.listdir(directory):
             f = os.path.join(directory, f)
@@ -250,7 +255,7 @@ class Publisher:
         
         return files
 
-    def mq_upload_tasks(self, stages, priority, direcotry=None, files=[]):
+    def mq_upload_tasks(self, stages, priority, directory=None, files=[]):
         """
         Uploads messages with new tasks to given queue.
         Separate task is created for each file.
@@ -259,8 +264,8 @@ class Publisher:
         :param directory: directory with files to upload
         :param files: list of files to upload
         """
-        if direcotry:
-            dir_files = self.get_files(direcotry)
+        if directory:
+            dir_files = self.get_files(directory)
             files = files + dir_files
         
         # register delivery confirmation callback
@@ -315,14 +320,15 @@ def main():
         try:
             zk.start(timeout=20)
         except KazooTimeoutError:
-            sys.stderr.writable('Failed to connect to zookeeper!')
+            logger.error('Failed to connect to zookeeper!')
             return 1
         
         # get server list
         try:
-            mq_servers = zk.get_children(constants.WORKER_CONFIG_MQ_SERVERS)[0].decode('utf-8')
+            mq_servers = zk.get_children(constants.WORKER_CONFIG_MQ_SERVERS)
         except Exception:
             logger.error('Failed to obtain MQ server list from zookeeper!')
+            traceback.print_exc()
             mq_servers = None
         
         # close connection
