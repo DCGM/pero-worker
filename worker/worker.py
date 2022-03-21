@@ -16,6 +16,9 @@ import threading
 import datetime
 from ftplib import FTP, all_errors, error_perm
 
+# dummy processing
+import random
+
 # load image and data for processing
 import cv2
 import pickle
@@ -157,6 +160,7 @@ class Worker(object):
         # configuration for the page parser and selected orc
         self.config = None
         self.ocr = None
+        self.page_parser = None
 
         # ftp login
         self.user = user
@@ -237,7 +241,7 @@ class Worker(object):
         """
         Connects to ftp
         """
-        self.ftp = cf.ftp_connect(self.ftp_servers)
+        self.ftp = cf.ftp_connect(self.ftp_servers, logger)
         if not self.ftp:
             raise ConnectionError('Failed to connect to ftp servers!')
         self.ftp.login(self.user, self.password)
@@ -657,65 +661,170 @@ class Worker(object):
         """
         self.processing_lock.acquire()
         self.update_status(constants.STATUS_PROCESSING)
-        # TODO
+
         # add try/catch for parsing request (can be something else than protobuf)
-        processing_request = ProcessingRequest().FromString(body)
+        try:
+            processing_request = ProcessingRequest().FromString(body)
+        except Exception as e:
+            logger.error('Failed to parse received request!')
+            logger.error('Received error:\n{}'.format(traceback.format_exc()))
+            channel.basic_nack(delivery_tag = method.delivery_tag)
+            channel.basic_recover(True)
+        
         current_stage = processing_request.processing_stages[0]
 
         logger.info(f'Processing request: {processing_request.uuid}')
         logger.debug(f'Request stage: {current_stage}')
+
+        # log start of processing
+        start_time = datetime.datetime.now(datetime.timezone.utc)
+        log = processing_request.logs.add()
+        log.host_id = self.worker_id
+        log.stage = processing_request.processing_stages[0]
+        log.status = 'Failed'
+        Timestamp.FromDatetime(log.start, start_time)
+
         try:
-            self.ocr_process_request(processing_request)
-        except RuntimeError as e:
-            # Processing failed - send message to output queue, no further processing is possible
-            logger.error('Failed to process request! Received error: {error}'.format(error=e))
-            output_stage = processing_request.processing_stages[-1]
-            channel.basic_publish('', output_stage, processing_request.SerializeToString())
-            channel.basic_ack(delivery_tag = method.delivery_tag)
-        except Exception:
-            # TODO - handle same way as runtime error!
+            dummy = self.config['WORKER']['DUMMY']
+        except KeyError:
+            dummy = False
+
+        try:
+            if dummy:
+                self.dummy_process_request(processing_request)
+            else:
+                self.ocr_process_request(processing_request)
+        except Exception as e:
             logger.error('Failed to process request {request_id} using stage {stage}!'.format(
                 request_id = processing_request.uuid,
                 stage = current_stage
             ))
-            logger.error(traceback.format_exc())
-            channel.basic_nack(delivery_tag = method.delivery_tag)
+            logger.error('Received error:\n{}'.format(traceback.format_exc()))
+
+            # Timestamp
+            end_time = datetime.datetime.now(datetime.timezone.utc)
+            Timestamp.FromDatetime(log.end, end_time)
+
+            # Processing failed - send message to output queue, no further processing is possible
+            next_stage = processing_request.processing_stages[-1]
         else:
+            log.status = 'OK'
+
+            # Timestamp
+            end_time = datetime.datetime.now(datetime.timezone.utc)
+            Timestamp.FromDatetime(log.end, end_time)
+
+            # worker statistics update
+            spend_time = (end_time - start_time).total_seconds()
+            self.queue_stats_total_processing_time += spend_time
+            self.queue_stats_processed_messages += 1
+
+            # select next processing stage
             processing_request.processing_stages.pop(0)
             next_stage = processing_request.processing_stages[0]
-            
+        finally:
             # send request to output queue and
             # acknowledge the request after successfull processing
             # TODO
             # add validation if message was received by mq
-            channel.basic_publish('', next_stage, processing_request.SerializeToString())
-            channel.basic_ack(delivery_tag = method.delivery_tag)
-        finally:
-            self.update_status(constants.STATUS_IDLE)
+            while True:
+                try:
+                    channel.basic_publish('', next_stage, processing_request.SerializeToString(),
+                        properties=pika.BasicProperties(delivery_mode=2),  # persistent delivery mode
+                        mandatory=True  # raise exception if message is rejected
+                    )
+                except pika.exceptions.UnroutableError as e:
+                    logger.error('Failed to deliver processing request {request} to queue {queue}!'.format(
+                        request = processing_request.request_id,
+                        queue = next_stage
+                    ))
+                    logger.error('Received error: {}'.format(e))
+
+                    if next_stage == processing_request.processing_stages[-1]:
+                        logger.error('Request was pushed back to queue {}!'.format(log.stage))
+                        channel.basic_nack(delivery_tag = method.delivery_tag)
+                        channel.basic_recover(True)
+                    else:
+                        logger.warn('Sending request to output queue instead!')
+                        log.log += 'Failed delivery to queue {}!\n'.format(next_stage)
+                        log.status = 'failed'
+                        next_stage = processing_request.processing_stages[-1]
+                        continue
+                else:
+                    channel.basic_ack(delivery_tag = method.delivery_tag)
+                break
+
+            # update status and statistics
             if self.queue_stats_processed_messages > 10:
                 self.update_queue_statistics()
+            self.update_status(constants.STATUS_IDLE)
             self.processing_lock.release()
 
             # wait until canceled during queue switching
             self.switch_queue_lock.acquire()
             self.switch_queue_lock.release()
+    
+    def dummy_process_request(self, processing_request):
+        """
+        Waits some time to simulate processing
+        :param processing_reques: processing request to work on
+        """
+        # get log for this stage
+        for log in processing_request.logs:
+            if log.stage == processing_request.processing_stages[0]:
+                break
+
+        # get processing time
+        try:
+            try:
+                time_delta = float(self.config['WORKER']['TIME_DELTA'])
+            except KeyError:
+                time_delta = 0
+            try:
+                processing_time = float(self.config['WORKER']['TIME'])
+            except KeyError:
+                try:
+                    processing_time = random.uniform(
+                        float(self.config['WORKER']['TIME_MIN']),
+                        float(self.config['WORKER']['TIME_MAX'])
+                    )
+                except KeyError:
+                    processing_time = 1
+        except (TypeError, ValueError):
+            error_msg = 'Wrong dummy config time fromat for processing phase {}, value must be number!'.format(log.stage)
+            logger.error(error_msg)
+            log.log += '{}\n'.format(error_msg)
+            raise
+        
+        if time_delta:
+            try:
+                data = processing_request.results[0].content
+            except IndexError:
+                error_msg = 'Failed to get request data from results!'
+                logger.error(error_msg)
+                log.log += '{}\n'.format(error_msg)
+                raise
+            processing_time = len(data) + random.uniform(-time_delta, time_delta)
+
+        # processing
+        logger.info('Dummy processing, waiting for {} seconds'.format(processing_time))
+        log.log += 'Dummy processing time: {} seconds\n'.format(processing_time)
+        time.sleep(processing_time)
+
+        log.status = 'Passed'
 
     def ocr_process_request(self, processing_request):
         """
         Process processing request using OCR
         :param processing_request: processing request to work on
-        :return: processing status
         """
         # TODO
         # add logger output to message log
 
-        start_time = datetime.datetime.now(datetime.timezone.utc)
-        # gen log
-        log = processing_request.logs.add()
-        log.host_id = self.worker_id
-        log.stage = processing_request.processing_stages[0]
-        #Timestamp.GetCurrentTime(log.start)
-        Timestamp.FromDatetime(log.start, start_time)
+        # get log for this stage
+        for log in processing_request.logs:
+            if log.stage == processing_request.processing_stages[0]:
+                break
 
         # load data
         img = None
@@ -734,7 +843,6 @@ class Worker(object):
                 logits_in = processing_request.results[i].content
         
         # run processing
-        page_parser = PageParser(self.config, self.ocr)  # TODO - move pageparser to load config
         try:
             if xml_in:
                 page_layout = PageLayout()
@@ -743,13 +851,12 @@ class Worker(object):
                 page_layout = PageLayout(id=processing_request.page_uuid, page_size=(img.shape[0], img.shape[1]))
             if logits_in:
                 page_layout.load_logits(logits_in)
-            page_layout = page_parser.process_page(img, page_layout)
+            page_layout = self.page_parser.process_page(img, page_layout)
         except Exception as e:
             # processing failed
             log.log += '{error}\n'.format(error = e)
             log.log += traceback.format_exc()
-            Timestamp.GetCurrentTime(log.end)
-            raise RuntimeError('{error}'.format(error = e))
+            raise
         
         # save output
         xml_out = page_layout.to_pagexml_string()
@@ -775,15 +882,7 @@ class Worker(object):
             logits.name = 'page.logits'
             logits.content = logits_out
         
-        # log end of processing
-        #Timestamp.GetCurrentTime(log.end)
-        end_time = datetime.datetime.now(datetime.timezone.utc)
-        Timestamp.FromDatetime(log.end, end_time)
-
-        # worker statistics
-        spend_time = (end_time - start_time).total_seconds()
-        self.queue_stats_total_processing_time += spend_time
-        self.queue_stats_processed_messages += 1
+        log.status = 'Passed'
 
     def ocr_load(self, name):
         """
@@ -863,6 +962,14 @@ class Worker(object):
                                 # set path to file
                                 self.config[section][key] = value['path']
         self.ftp_disconnect()
+
+        # load ocr for page processing
+        try:
+            dummy = self.config['WORKER']['DUMMY']
+        except KeyError:
+            dummy = None
+        if not dummy:
+            self.page_parser = PageParser(self.config, self.ocr)
     
     def stop_processing(self):
         """

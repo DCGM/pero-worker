@@ -26,7 +26,7 @@ import worker_functions.connection_aux_functions as cf
 # === Global config ===
 
 # setup logging (required by kazoo)
-log_formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
+log_formatter = logging.Formatter('%(asctime)s %(levelname)s WATCHDOG: %(message)s')
 
 stderr_handler = logging.StreamHandler()
 stderr_handler.setFormatter(log_formatter)
@@ -588,6 +588,8 @@ class WorkerWatchdog(ZkClient):
         # TODO
         # register watchdog as main, or put it to sleep if secondary (use kazoo lease)
 
+        error_count = 0
+
         try:
             while True:
                 try:
@@ -605,8 +607,15 @@ class WorkerWatchdog(ZkClient):
                         'Received error: {}'
                         .format(e)
                     )
-                # TODO
-                # add recovery
+                except Exception as e:
+                    self.logger.error('Unknown error has occurred!')
+                    self.logger.error('Received error:\n{}'.format(traceback.format_exc()))
+                    if error_count > 2:
+                        raise
+                    error_count += 1
+                else:
+                    # reset error counter
+                    error_count = 0
 
                 # run only once if dryrun is defined
                 if self.dry_run:
@@ -618,8 +627,7 @@ class WorkerWatchdog(ZkClient):
         except KeyboardInterrupt:
             self.logger.info('Keyboard interrupt received!')
         except Exception:
-            self.logger.error('Unknown error has occurred!')
-            self.logger.error('Received error:\n{}'.format(traceback.format_exc()))
+            self.logger.error('Failed to recover!')
             self.logger.error('Exiting!')
             return 1
         

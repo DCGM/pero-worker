@@ -129,10 +129,11 @@ def zk_server_list(servers) -> str:
     # join to resulting csv
     return ','.join(output_servers)
 
-def ftp_connect(ftp_servers):
+def ftp_connect(ftp_servers, logger):
     """
     Connect to ftp server
     :param ftp_servers: ftp servers to try
+    :param logger: logger to use
     :return: ftp connection
     """
     ftp = None
