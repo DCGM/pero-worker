@@ -405,44 +405,48 @@ class Worker(object):
         # get averate processing time for current queue
         avg_msg_time = self.queue_stats_total_processing_time / self.queue_stats_processed_messages
         logger.debug('Updating queue statistics for queue {}'.format(self.queue))
-        with self.queue_stats_lock:
-            try:
-                # get queue average processing time from zookeeper
-                zk_msg_time = self.zk.get(constants.QUEUE_STATS_AVG_MSG_TIME_TEMPLATE.format(
-                    queue_name = self.queue
-                ))[0].decode('utf-8')
+        self.queue_stats_lock.acquire()
+        try:
+            # get queue average processing time from zookeeper
+            zk_msg_time = self.zk.get(constants.QUEUE_STATS_AVG_MSG_TIME_TEMPLATE.format(
+                queue_name = self.queue
+            ))[0].decode('utf-8')
 
-                # calculate new queue average processing time
-                if zk_msg_time:
-                    zk_msg_time = float.fromhex(zk_msg_time)
-                    avg_msg_time = avg_msg_time + zk_msg_time / 2
-                
-                # update queue statistics in zookeeper
-                self.zk.set(
-                    path=constants.QUEUE_STATS_AVG_MSG_TIME_TEMPLATE.format(queue_name = self.queue),
-                    value=float(avg_msg_time).hex().encode('utf-8')
-                )
+            # calculate new queue average processing time
+            if zk_msg_time:
+                zk_msg_time = float.fromhex(zk_msg_time)
+                avg_msg_time = avg_msg_time + zk_msg_time / 2
+            
+            # update queue statistics in zookeeper
+            self.zk.set(
+                path=constants.QUEUE_STATS_AVG_MSG_TIME_TEMPLATE.format(queue_name = self.queue),
+                value=float(avg_msg_time).hex().encode('utf-8')
+            )
 
-                # reset counters
-                self.queue_stats_total_processing_time = self.queue_stats_processed_messages = 0
+            # reset counters
+            self.queue_stats_total_processing_time = self.queue_stats_processed_messages = 0
 
-            except kazoo.exceptions.ZookeeperError:
-                logger.error(
-                    'Failed to update average processing time for queue {} due to zookeeper error!'
-                    .format(self.queue)
-                )
-                logger.error('Received error:\n{}'.format(traceback.format_exc()))
-            except ValueError:
-                logger.error(
-                    'Failed to update average processing time for queue {} due to wrong number format in zookeeper!'
-                    .format(self.queue)
-                )
-            except Exception:
-                logger.error(
-                    'Failed to update average processing time for queue {} due to unknown error!'
-                    .format(self.queue)
-                )
-                logger.error('Received error:\n{}'.format(traceback.format_exc()))
+        except kazoo.exceptions.ZookeeperError:
+            logger.error(
+                'Failed to update average processing time for queue {} due to zookeeper error!'
+                .format(self.queue)
+            )
+            logger.error('Received error:\n{}'.format(traceback.format_exc()))
+        except ValueError:
+            logger.error(
+                'Failed to update average processing time for queue {} due to wrong number format in zookeeper!'
+                .format(self.queue)
+            )
+        except Exception:
+            logger.error(
+                'Failed to update average processing time for queue {} due to unknown error!'
+                .format(self.queue)
+            )
+            logger.error('Received error:\n{}'.format(traceback.format_exc()))
+        else:
+            logger.debug('Statistics updated!')
+        finally:
+            self.queue_stats_lock.release()
     
     def gen_id(self):
         """
