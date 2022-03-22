@@ -80,6 +80,12 @@ def parse_args():
         help='Queue with data to download.'
     )
     parser.add_argument(
+        '-k', '--keep-running',
+        help='Keeps downloading of messages running, waiting for new messages, instead of exiting after all message from queue are downloaded.',
+        default=False,
+        action='store_true'
+    )
+    parser.add_argument(
         '-r', '--directory',
         help='Directory with data to upload / where data will be downloaded to.',
         type=dir_path
@@ -116,6 +122,8 @@ class Publisher:
         self.delivery_failed = False
         # directory where to store results from queue
         self.directory = None
+        # message counter
+        self.n_messages = 0
     
     def mq_connect(self):
         """
@@ -167,7 +175,7 @@ class Publisher:
         with open(os.path.join(directory, f'{message.uuid}_info.txt'), 'w') as info:
             info.write(f'Message id : {message.uuid}\n')
             info.write(f'Page uuid  : {message.page_uuid}\n')
-            info.write(f'Start time : {message.start_time}\n')
+            info.write(f'Start time : {message.start_time.ToDatetime().isoformat()}\n')
             info.write(f'Remaining processing stages:\n')
             for stage in message.processing_stages:
                 info.write(f'  {stage}\n')
@@ -178,8 +186,8 @@ class Publisher:
             with open(os.path.join(directory, f'{log.stage}.log'), 'w') as file:
                 file.write(f'Host id    : {log.host_id}\n')
                 file.write(f'Stage      : {log.stage}\n')
-                file.write(f'Start time : {log.start}\n')
-                file.write(f'End time   : {log.end}\n')
+                file.write(f'Start time : {log.start.ToDatetime().isoformat()}\n')
+                file.write(f'End time   : {log.end.ToDatetime().isoformat()}\n')
                 file.write(f'Status     : {log.status}\n')
                 file.write('*** Log ***\n')
                 file.write(log.log)
@@ -193,12 +201,12 @@ class Publisher:
         """
         self.directory = directory
         logger.info('Starting to download messages from queue {}'.format(queue))
-        n_messages = 0
+        self.n_messages = 0
         while True:
             method, properties, body = self.mq_channel.basic_get(queue=queue, auto_ack=False)
             if method == properties == body == None:
-                if n_messages:
-                    logger.info('Number of received messages: {}'.format(n_messages))
+                if self.n_messages:
+                    logger.info('Number of received messages: {}'.format(self.n_messages))
                 else:
                     logger.info('Queue is empty, no messages were received')
                 break
@@ -206,7 +214,35 @@ class Publisher:
             # Remove output stage from list of remaining stages
             self.mq_save_result(method, properties, body)
             self.mq_channel.basic_ack(delivery_tag=method.delivery_tag)
-            n_messages += 1
+            self.n_messages += 1
+    
+    def mq_save_message(self, channel, method, properties, body):
+        """
+        Callback for queue consumption - saves messages to output directory
+        :param channel: channel instance
+        :param method: delivery method
+        :param properties: message properties
+        :param body: message body
+        """
+        self.mq_save_result(method, properties, body)
+        self.mq_channel.basic_ack(delivery_tag=method.delivery_tag)
+        self.n_messages += 1
+
+    def mq_get_results_continuous(self, queue, directory):
+        """
+        Recives result messages from queue and stores them to directory.
+        Keeps running and waiting for messages.
+        :param queue: queue to download results from
+        :param directory: directory where to store downloaded data
+        """
+        self.directory = directory
+        logger.info('Starting to download messages from queue {}'.format(queue))
+
+        self.mq_channel.basic_consume(queue=queue, on_message_callback=self.mq_save_message, auto_ack=False)
+        try:
+            self.mq_channel.start_consuming()
+        except KeyboardInterrupt:
+            logger.info('Total number of received messages: {}'.format(self.n_messages))
     
     @staticmethod
     def create_msg(image, stages):
@@ -358,7 +394,10 @@ def main():
             error_code = 1
         if not error_code:
             try:
-                publisher.mq_get_results(args.download, args.directory)
+                if args.keep_running:
+                    publisher.mq_get_results_continuous(args.download, args.directory)
+                else:
+                    publisher.mq_get_results(args.download, args.directory)
             except Exception:
                 logger.error(f'Failed to get results from {args.download}!')
                 traceback.print_exc()
