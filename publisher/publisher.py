@@ -245,18 +245,19 @@ class Publisher:
             logger.info('Total number of received messages: {}'.format(self.n_messages))
     
     @staticmethod
-    def create_msg(image, stages):
+    def create_msg(image, stages, priority):
         """
         Creates processing task message.
         :param image: image that will be added to the message
         :param stages: list of processing stages of the task
+        :param priority: priority of the message
         """
         message = ProcessingRequest()
 
         # add message properties
         message.uuid = uuid.uuid4().hex
         message.page_uuid = uuid.uuid4().hex
-        message.priority = 0
+        message.priority = priority
         Timestamp.GetCurrentTime(message.start_time)
 
         # add processing stages
@@ -314,7 +315,7 @@ class Publisher:
                 logger.error(f'Could not open file {f}!')
                 continue
             
-            message = self.create_msg(image, stages)
+            message = self.create_msg(image, stages, priority)
             image.close()
 
             logger.info(f'Uploading file {f}')
@@ -323,7 +324,7 @@ class Publisher:
 
             try:
                 self.mq_channel.basic_publish('', stages[0], message.SerializeToString(),
-                    properties=pika.BasicProperties(delivery_mode=2),
+                    properties=pika.BasicProperties(delivery_mode=2, priority=message.priority),
                     mandatory=True
                 )
             except pika.exceptions.UnroutableError as e:
@@ -332,6 +333,48 @@ class Publisher:
             except pika.exceptions.AMQPError as e:
                 logger.error('Message was not confirmed by the MQ broker!')
                 logger.error('Received error: {}'.format(e))
+
+def zk_get_mq_servers(zookeeper_servers, logger = logging.getLogger(__name__)):
+    """
+    Get list of mq servers from zookeeper
+    :param zookeeper_servers: list of zookeeper servers
+    :param logger: logger to use
+    :return: list of mq servers or None
+    """
+    mq_servers = None
+
+    # connect to zookeeper
+    zk = KazooClient(hosts=zookeeper_servers)
+    try:
+        zk.start(timeout=20)
+    except KazooTimeoutError:
+        logger.error('Failed to connect to zookeeper!')
+        return None
+    
+    # get server list
+    try:
+        mq_servers = zk.get_children(constants.WORKER_CONFIG_MQ_SERVERS)
+    except Exception:
+        logger.error('Failed to obtain MQ server list from zookeeper!')
+        traceback.print_exc()
+        mq_servers = None
+    
+    # close connection
+    try:
+        zk.stop()
+        zk.close()
+    except Exception:
+        logger.error('Failed to close connection to zookeeper!')
+        traceback.print_exc()
+    
+    # if server list was not obtained, exit
+    if not mq_servers:
+        return None
+
+    # parse mq server list obtained from zookeeper
+    mq_servers = cf.server_list(mq_servers)
+    
+    return mq_servers
 
 def main():
     args = parse_args()
@@ -351,36 +394,11 @@ def main():
     
     # get MQ server list from zookeeper
     if not mq_servers:
-        # connect to zookeeper
-        zk = KazooClient(hosts=zookeeper_servers)
-        try:
-            zk.start(timeout=20)
-        except KazooTimeoutError:
-            logger.error('Failed to connect to zookeeper!')
-            return 1
-        
-        # get server list
-        try:
-            mq_servers = zk.get_children(constants.WORKER_CONFIG_MQ_SERVERS)
-        except Exception:
-            logger.error('Failed to obtain MQ server list from zookeeper!')
-            traceback.print_exc()
-            mq_servers = None
-        
-        # close connection
-        try:
-            zk.stop()
-            zk.close()
-        except Exception:
-            logger.error('Failed to close connection to zookeeper!')
-            traceback.print_exc()
-        
-        # if server list was not obtained, exit
-        if not mq_servers:
-            return 1
+        mq_servers = zk_get_mq_servers(zookeeper_servers)
 
-        # parse mq server list obtained from zookeeper
-        mq_servers = cf.server_list(mq_servers)
+    if not mq_servers:
+        logger.error('Failed to get mq servers!')
+        return 1
 
     # connect to mq
     publisher = Publisher(mq_servers)

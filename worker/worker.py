@@ -189,7 +189,6 @@ class Worker(object):
         # queue statistics
         self.queue_stats_processed_messages = 0  # number of processed messages
         self.queue_stats_total_processing_time = 0  # time spend on processing messages
-        self.queue_stats_lock = None  # lock for accessing the stats in zookeeper
 
     def clean_tmp_files(self, path=None):
         """
@@ -225,15 +224,10 @@ class Worker(object):
         Cleans up connections and temporary files before worker stops
         """
         logger.info('Closing connection and cleaning up')
-        #logger.debug('Cleanup phase: update status')
         #self.update_status(constants.STATUS_DEAD)
-        logger.debug('Cleanup phase: disconnect mq')
         self.mq_disconnect()
-        logger.debug('Cleanup phase: disconnect ftp')
         self.ftp_disconnect()
-        logger.debug('Cleanup phase: disconnect zk')
         self.zk_disconnect()
-        logger.debug('Cleanup phase: cleanup tmp files')
         self.clean_tmp_files()
         logger.debug('Cleanup complete!')
     
@@ -325,31 +319,22 @@ class Worker(object):
 
         # stop processing of cureent queue and report statistics
         self.stop_processing()
+        logger.info('Switching queue to {}'.format(queue))
         self.update_status(constants.STATUS_RECONFIGURING)
         self.update_queue_statistics()
 
+        # reset statistics in the case that update failed
+        self.queue_stats_processed_messages = self.queue_stats_total_processing_time = 0
+
         # switch queue
         self.queue = queue
-        try:
-            self.queue_stats_lock = self.zk.Lock(
-                constants.QUEUE_STATS_AVG_MSG_TIME_LOCK_TEMPLATE.format(queue_name = queue),
-                identifier=self.worker_id
-            )
-        except kazoo.exceptions.ZookeeperError as e:
-            logger.error('Failed to get lock for average message time statistics for queue {}!'.format(
-                queue
-            ))
-            self.update_status(constants.STATUS_FAILED)
-            self.switch_queue_lock.release()
-            self.processing_lock.release()
-            return
 
         # load OCR data and configuration
         try:
             self.ocr_load(queue)
         except Exception:
             self.update_status(constants.STATUS_FAILED)
-            logger.error('Failed to switch queue to {}, could not get configuration for given processing phase!'.format(
+            logger.error('Failed to switch queue to {}, could not get configuration for given processing stage!'.format(
                 queue
             ))
             logger.error('{}'.format(traceback.format_exc()))
@@ -405,7 +390,22 @@ class Worker(object):
         # get averate processing time for current queue
         avg_msg_time = self.queue_stats_total_processing_time / self.queue_stats_processed_messages
         logger.debug('Updating queue statistics for queue {}'.format(self.queue))
-        self.queue_stats_lock.acquire()
+
+        # get lock for given statistic from zookeeper
+        try:
+            queue_stats_lock = self.zk.Lock(
+                constants.QUEUE_STATS_AVG_MSG_TIME_LOCK_TEMPLATE.format(queue_name = self.queue),
+                identifier=self.worker_id
+            )
+        except Exception as e:  # kazoo.exceptions.ZookeeperError
+            logger.error(
+                'Failed to get lock for average message time statistics for queue {}!'
+                .format(self.queue)
+            )
+            logger.error('Received error:\n{}'.format(traceback.format_exc()))
+            return
+
+        queue_stats_lock.acquire()
         try:
             # get queue average processing time from zookeeper
             zk_msg_time = self.zk.get(constants.QUEUE_STATS_AVG_MSG_TIME_TEMPLATE.format(
@@ -422,10 +422,6 @@ class Worker(object):
                 path=constants.QUEUE_STATS_AVG_MSG_TIME_TEMPLATE.format(queue_name = self.queue),
                 value=float(avg_msg_time).hex().encode('utf-8')
             )
-
-            # reset counters
-            self.queue_stats_total_processing_time = self.queue_stats_processed_messages = 0
-
         except kazoo.exceptions.ZookeeperError:
             logger.error(
                 'Failed to update average processing time for queue {} due to zookeeper error!'
@@ -444,9 +440,11 @@ class Worker(object):
             )
             logger.error('Received error:\n{}'.format(traceback.format_exc()))
         else:
+            # reset counters
+            self.queue_stats_total_processing_time = self.queue_stats_processed_messages = 0
             logger.debug('Statistics updated!')
         finally:
-            self.queue_stats_lock.release()
+            queue_stats_lock.release()
     
     def gen_id(self):
         """
@@ -578,7 +576,9 @@ class Worker(object):
         self.mq_connection = pika.SelectConnection(
             pika.ConnectionParameters(
                 host=self.mq_server['ip'],
-                port=self.mq_server['port'] if self.mq_server['port'] else pika.ConnectionParameters.DEFAULT_PORT
+                port=self.mq_server['port'] if self.mq_server['port'] else pika.ConnectionParameters.DEFAULT_PORT,
+                heartbeat=600,
+                connection_attempts=10
             ),
             on_open_callback=self.mq_connection_open_ok,
             on_open_error_callback=self.mq_connection_open_error,
@@ -651,7 +651,8 @@ class Worker(object):
         self.mq_channel.basic_consume(
             self.queue,
             self.mq_process_request,
-            consumer_tag = self.worker_id
+            consumer_tag = self.worker_id,
+            auto_ack=False
         )
     
     def mq_process_request(self, channel, method, properties, body):
@@ -672,8 +673,7 @@ class Worker(object):
         except Exception as e:
             logger.error('Failed to parse received request!')
             logger.error('Received error:\n{}'.format(traceback.format_exc()))
-            channel.basic_nack(delivery_tag = method.delivery_tag)
-            channel.basic_recover(True)
+            channel.basic_nack(delivery_tag = method.delivery_tag, requeue = True)
         
         current_stage = processing_request.processing_stages[0]
 
@@ -729,32 +729,33 @@ class Worker(object):
         finally:
             # send request to output queue and
             # acknowledge the request after successfull processing
-            # TODO
-            # add validation if message was received by mq
             while True:
                 try:
                     channel.basic_publish('', next_stage, processing_request.SerializeToString(),
-                        properties=pika.BasicProperties(delivery_mode=2),  # persistent delivery mode
+                        properties=pika.BasicProperties(delivery_mode=2, priority=processing_request.priority),  # persistent delivery mode
                         mandatory=True  # raise exception if message is rejected
                     )
                 except pika.exceptions.UnroutableError as e:
-                    logger.error('Failed to deliver processing request {request} to queue {queue}!'.format(
-                        request = processing_request.request_id,
+                    logger.error('Failed to deliver processing request {request_id} to queue {queue}!'.format(
+                        request_id = processing_request.uuid,
                         queue = next_stage
                     ))
                     logger.error('Received error: {}'.format(e))
 
                     if next_stage == processing_request.processing_stages[-1]:
                         logger.error('Request was pushed back to queue {}!'.format(log.stage))
-                        channel.basic_nack(delivery_tag = method.delivery_tag)
-                        channel.basic_recover(True)
+                        channel.basic_nack(delivery_tag = method.delivery_tag, requeue = True)
                     else:
                         logger.warn('Sending request to output queue instead!')
                         log.log += 'Failed delivery to queue {}!\n'.format(next_stage)
-                        log.status = 'failed'
+                        log.status = 'Failed'
                         next_stage = processing_request.processing_stages[-1]
                         continue
                 else:
+                    logger.debug('Acknowledging request {request_id} from queue {queue}'.format(
+                        request_id = processing_request.uuid,
+                        queue = log.stage
+                    ))
                     channel.basic_ack(delivery_tag = method.delivery_tag)
                 break
 
@@ -777,45 +778,66 @@ class Worker(object):
         for log in processing_request.logs:
             if log.stage == processing_request.processing_stages[0]:
                 break
-
-        # get processing time
+        
+        # get data size
         try:
+            data_size = len(processing_request.results[0].content)
+        except Exception:
+            error_msg = 'Failed to get request data from results!'
+            received_error = 'Received error:\n{}'.format(traceback.format_exc())
+            for msg in (error_msg, received_error):
+                logger.error(msg)
+                log.log += '{}\n'.format(msg)
+            raise
+
+        # get processing stage configuration
+        try:
+            try:
+                processing_time_scale = float(self.config['WORKER']['TIME_SCALE'])
+            except KeyError:
+                processing_time_scale = 1
             try:
                 time_delta = float(self.config['WORKER']['TIME_DELTA'])
             except KeyError:
                 time_delta = 0
             try:
-                processing_time = float(self.config['WORKER']['TIME'])
+                processing_time_diff_min = float(self.config['WORKER']['TIME_DIFF_MIN'])
+                processing_time_diff_max = float(self.config['WORKER']['TIME_DIFF_MAX'])
             except KeyError:
-                try:
-                    processing_time = random.uniform(
-                        float(self.config['WORKER']['TIME_MIN']),
-                        float(self.config['WORKER']['TIME_MAX'])
-                    )
-                except KeyError:
-                    processing_time = 1
+                processing_time_diff_min = processing_time_diff_max = 0
         except (TypeError, ValueError):
-            error_msg = 'Wrong dummy config time fromat for processing phase {}, value must be number!'.format(log.stage)
+            error_msg = 'Wrong dummy config time fromat for processing stage {}, value must be number!'.format(log.stage)
             logger.error(error_msg)
             log.log += '{}\n'.format(error_msg)
             raise
         
-        if time_delta:
-            try:
-                data = processing_request.results[0].content
-            except IndexError:
-                error_msg = 'Failed to get request data from results!'
-                logger.error(error_msg)
-                log.log += '{}\n'.format(error_msg)
-                raise
-            processing_time = len(data) + random.uniform(-time_delta, time_delta)
+        if not processing_time_diff_max and not processing_time_diff_min:
+            processing_time_diff_min = -time_delta
+            processing_time_diff_max = time_delta
+        
+        if processing_time_diff_min > processing_time_diff_max:
+            error_msg = 'Wrong dummy config for processing stage {}, mimimal processing time cannot be higher than maximal processing time!'.format(log.stage)
+            logger.error(error_msg)
+            log.log += '{}\n'.format(error_msg)
+            raise
+
+        # get processing time
+        processing_time = data_size * processing_time_scale + random.uniform(processing_time_diff_min, processing_time_diff_max)
+        if processing_time < 0:
+            processing_time = 0
 
         # processing
         logger.info('Dummy processing, waiting for {} seconds'.format(processing_time))
         log.log += 'Dummy processing time: {} seconds\n'.format(processing_time)
+        log.log += 'Request data size: {}\n'.format(data_size)
+        if processing_time_scale != 1:
+            log.log += 'Processing time scale: {}\n'.fomrat(processing_time_scale)
+        if time_delta:
+            log.log += 'Time delta: {}\n'.fomrat(time_delta)
+        elif processing_time_diff_max or processing_time_diff_min:
+            log.log += 'Time difference min: {}\n'.format(processing_time_diff_min)
+            log.log += 'Time difference max: {}\n'.format(processing_time_diff_max)
         time.sleep(processing_time)
-
-        log.status = 'Passed'
 
     def ocr_process_request(self, processing_request):
         """
@@ -885,13 +907,11 @@ class Worker(object):
             logits = processing_request.results.add()
             logits.name = 'page.logits'
             logits.content = logits_out
-        
-        log.status = 'Passed'
 
     def ocr_load(self, name):
         """
-        Loads ocr for phase given by name
-        :param name: name of config/queue of the phase
+        Loads ocr for stage given by name
+        :param name: name of config/queue of the stage
         """
         # create ocr directory
         self.ocr = os.path.join(self.tmp_directory, name)
@@ -1083,7 +1103,7 @@ class Worker(object):
             self.mq_connection.ioloop.start()  # TODO - run connection in diferent thread
         except KeyboardInterrupt:
             # TODO - debug keyboard interrupt - sometimes does not stop the ioloop
-            logger.info('User interrupt received! Shutting down!')
+            logger.info('Keyboard interrupt received! Shutting down!')
             self.mq_disconnect()
             self.update_status(constants.STATUS_DEAD)
         except Exception:
