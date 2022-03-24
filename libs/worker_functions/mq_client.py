@@ -5,11 +5,13 @@
 import pika
 import logging
 
+import worker_functions.connection_aux_functions as cf
+
 class MQClient:
     """
     Blocking MQ client
     """
-    def __init__(mq_servers = [], logger = logging.getLogger(__name__)):
+    def __init__(self, mq_servers = [], logger = logging.getLogger(__name__)):
         # list of mq servers
         self.mq_servers = mq_servers
         # logger
