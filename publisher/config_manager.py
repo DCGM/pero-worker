@@ -300,7 +300,11 @@ def main():
 
             # create queue
             try:
-                mq_channel.queue_declare(queue=args.name, arguments={'x-max-priority': 2})
+                mq_channel.queue_declare(
+                    queue=args.name,
+                    arguments={'x-max-priority': 1},
+                    durable=True
+                )
             except ValueError as e:
                 logger.error('Failed to declare queue {queue}! Received error: {error}'.format(
                     queue = args.name,
