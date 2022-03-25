@@ -831,9 +831,9 @@ class Worker(object):
         log.log += 'Dummy processing time: {} seconds\n'.format(processing_time)
         log.log += 'Request data size: {}\n'.format(data_size)
         if processing_time_scale != 1:
-            log.log += 'Processing time scale: {}\n'.fomrat(processing_time_scale)
+            log.log += 'Processing time scale: {}\n'.format(processing_time_scale)
         if time_delta:
-            log.log += 'Time delta: {}\n'.fomrat(time_delta)
+            log.log += 'Time delta: {}\n'.format(time_delta)
         elif processing_time_diff_max or processing_time_diff_min:
             log.log += 'Time difference min: {}\n'.format(processing_time_diff_min)
             log.log += 'Time difference max: {}\n'.format(processing_time_diff_max)
