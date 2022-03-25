@@ -8,6 +8,8 @@ import argparse
 import traceback
 import logging
 import uuid
+import datetime
+from stats import StatsCounter
 
 # connection auxiliary formating functions
 import worker_functions.connection_aux_functions as cf
@@ -107,10 +109,16 @@ def parse_args():
         type=int,
         default=0
     )
+    parser.add_argument(
+        '--count-statistics',
+        help='Count detailed statistics about processed messages',
+        default=False,
+        action='store_true'
+    )
     return parser.parse_args()
 
 class Publisher:
-    def __init__(self, mq_servers):
+    def __init__(self, mq_servers, count_stats = False):
         # list of servers to use
         self.mq_servers = mq_servers
         # connection to message broker
@@ -124,6 +132,11 @@ class Publisher:
         self.directory = None
         # message counter
         self.n_messages = 0
+        # statistics counter
+        if count_stats:
+            self.stats_counter = StatsCounter(logger = logger)
+        else:
+            self.stats_counter = None
     
     def mq_connect(self):
         """
@@ -191,6 +204,9 @@ class Publisher:
                 file.write(f'Status     : {log.status}\n')
                 file.write('*** Log ***\n')
                 file.write(log.log)
+        
+        if self.stats_counter:
+            self.stats_counter.update_message_statistics(message)
 
     
     def mq_get_results(self, queue, directory):
@@ -207,6 +223,8 @@ class Publisher:
             if method == properties == body == None:
                 if self.n_messages:
                     logger.info('Number of received messages: {}'.format(self.n_messages))
+                    if self.stats_counter:
+                        self.stats_counter.log_statistics()
                 else:
                     logger.info('Queue is empty, no messages were received')
                 break
@@ -243,6 +261,8 @@ class Publisher:
             self.mq_channel.start_consuming()
         except KeyboardInterrupt:
             logger.info('Total number of received messages: {}'.format(self.n_messages))
+            if self.stats_counter:
+                self.stats_counter.log_statistics()
     
     @staticmethod
     def create_msg(image, stages, priority):
@@ -258,7 +278,7 @@ class Publisher:
         message.uuid = uuid.uuid4().hex
         message.page_uuid = uuid.uuid4().hex
         message.priority = priority
-        Timestamp.GetCurrentTime(message.start_time)
+        Timestamp.FromDatetime(message.start_time, datetime.datetime.now(datetime.timezone.utc))
 
         # add processing stages
         for stage in stages:
@@ -401,7 +421,7 @@ def main():
         return 1
 
     # connect to mq
-    publisher = Publisher(mq_servers)
+    publisher = Publisher(mq_servers, count_stats=args.count_statistics)
     publisher.mq_connect()
 
     error_code = 0

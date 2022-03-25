@@ -9,6 +9,7 @@ import traceback
 import logging
 import uuid
 import random
+import datetime
 
 # connection auxiliary formating functions
 import worker_functions.connection_aux_functions as cf
@@ -129,7 +130,7 @@ class DummyMsgGenerator(MQClient):
         message.uuid = uuid.uuid4().hex
         message.page_uuid = uuid.uuid4().hex
         message.priority = priority
-        Timestamp.GetCurrentTime(message.start_time)
+        Timestamp.FromDatetime(message.start_time, datetime.datetime.now(datetime.timezone.utc))
 
         # add processing stages
         for stage in stages:

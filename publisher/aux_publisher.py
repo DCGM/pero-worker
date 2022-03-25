@@ -7,6 +7,7 @@ import sys
 import os
 import pika
 import uuid
+import datetime
 
 # protobuf
 from message_definitions.message_pb2 import ProcessingRequest, StageLog, Data
@@ -50,7 +51,7 @@ def create_msg(image, stages):
     message.uuid = uuid.uuid4().hex
     message.page_uuid = uuid.uuid4().hex
     message.priority = 0
-    Timestamp.GetCurrentTime(message.start_time)
+    Timestamp.FromDatetime(message.start_time, datetime.datetime.now(datetime.timezone.utc))
 
     # add processing stages
     for stage in stages:
