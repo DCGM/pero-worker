@@ -13,6 +13,17 @@ import copy
 from message_definitions.message_pb2 import ProcessingRequest, StageLog, Data
 from google.protobuf.timestamp_pb2 import Timestamp
 
+# setup logging (required by kazoo)
+log_formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
+
+stderr_handler = logging.StreamHandler()
+stderr_handler.setFormatter(log_formatter)
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+# TODO - remove debug level
+logger.setLevel(logging.DEBUG)
+logger.addHandler(stderr_handler)
 
 def dir_path(path):
     """
@@ -40,6 +51,7 @@ def parse_args():
 class StatsCounter:
 
     stage_template = {
+        'wait': 0,  # total time messages spend in queue, waiting for processing in this stage (failed messages are not included)
         'time': 0,  # total processing time of all messages for given stage (failed messages are not included)
         'count': 0,  # message count  (failed messages exclueded)
         'failed': 0  # failed message count
@@ -47,8 +59,8 @@ class StatsCounter:
 
     pipeline_template = {
         'stages': [],  # pipeline stages messages goes through
-        'time': 0,  # total stage time
-        'count': 0   # total stage message count
+        'time': 0,  # total pipeline time
+        'count': 0   # total pipeline message count
     }
 
     def __init__(self, logger = logging.getLogger(__name__)):
@@ -64,7 +76,7 @@ class StatsCounter:
         Logs statistics using logger
         """
         self.logger.info(
-            'Average message processing time: {}'
+            'Average message total processing time: {}'
             .format((self.time / self.count) if self.count else 0)
         )
         self.logger.info('Message count: {}'.format(self.count))
@@ -75,6 +87,9 @@ class StatsCounter:
                 'Average stage processing time: {}'
                 .format((self.stages[stage]['time'] / self.stages[stage]['count']) if self.stages[stage]['count'] else 0)
             )
+            self.logger.info(
+                'Average stage waiting time: {}'
+                .format((self.stages[stage]['wait'] / self.stages[stage]['count']) if self.stages[stage]['count'] else 0))
             self.logger.info('Total stage message count: {}'.format(self.stages[stage]['count']))
             self.logger.info('Total stage failed messages: {}'.format(self.stages[stage]['failed']))
         for pipeline in self.pipelines:
@@ -86,7 +101,7 @@ class StatsCounter:
                     pipeline_stages = '{}'.format(stage)
             self.logger.info('Statistics for pipeline {}:'.format(pipeline_stages))
             self.logger.info(
-                'Average pipeline processing time: {}'
+                'Average pipeline total processing time: {}'
                 .format((pipeline['time'] / pipeline['count']) if pipeline['count'] else 0)
             )
             self.logger.info('Total pipeline message count: {}'.format(pipeline['count']))
@@ -99,12 +114,9 @@ class StatsCounter:
         stages = []
         msg_start_time = Timestamp.ToDatetime(message.start_time)
         msg_end_time = msg_start_time
+        last_stage_end_time = None
         for log in message.logs:
-            start_time = Timestamp.ToDatetime(log.start)
-            end_time = Timestamp.ToDatetime(log.end)
-            # msg end time = end time of last stage
-            if end_time > msg_end_time:
-                msg_end_time = end_time
+            
             # update failed message count
             if log.status != 'OK':
                 if log.stage not in self.stages:
@@ -113,8 +125,23 @@ class StatsCounter:
                 self.failed += 1
                 return  # do not update time if message failed to process
             
+            start_time = Timestamp.ToDatetime(log.start)
+            end_time = Timestamp.ToDatetime(log.end)
+            
+            # msg end time = end time of last stage
+            if end_time > msg_end_time:
+                msg_end_time = end_time
+            
+            # stage waiting time
+            if not last_stage_end_time:
+                wait_time = (start_time - msg_start_time).total_seconds()
+            else:
+                wait_time = (start_time - last_stage_end_time).total_seconds()
+            last_stage_end_time = end_time
+            
             # add stage statistics
-            stages.append({'name': log.stage, 'time': (end_time - start_time).total_seconds()})
+            stages.append({'name': log.stage, 'time': (end_time - start_time).total_seconds(), 'wait': wait_time})
+        
         time = (msg_end_time - msg_start_time).total_seconds()
         
         # update global statistics
@@ -123,6 +150,7 @@ class StatsCounter:
                 self.stages[stage['name']] = copy.deepcopy(self.stage_template)
             self.stages[stage['name']]['time'] += stage['time']
             self.stages[stage['name']]['count'] += 1
+            self.stages[stage['name']]['wait'] += stage['wait']
         
         self.time += time
         self.count += 1
@@ -147,3 +175,24 @@ class StatsCounter:
         pipeline['count'] += 1
         pipeline['stages'] = [stage['name'] for stage in stages]
         self.pipelines.append(pipeline)
+
+def main():
+    args = parse_args()
+
+    stats_counter = StatsCounter(logger=logger)
+    messages = os.listdir(args.directory)
+    for message in messages:
+        message_path = os.path.join(args.directory, message)
+        try:
+            message_data = open(os.path.join(message_path, 'message_body'), 'rb')
+        except FileNotFoundError:
+            continue
+
+        stats_counter.update_message_statistics(ProcessingRequest.FromString(message_data.read()))
+        message_data.close()
+    
+    stats_counter.log_statistics()
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())
