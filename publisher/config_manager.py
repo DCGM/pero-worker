@@ -287,15 +287,19 @@ def main():
                 ):
                     zk.set(
                         path=constants.QUEUE_CONFIG_ADMINISTRATIVE_PRIORITY_TEMPLATE.format(queue_name = args.name),
-                        value=int.to_bytes(0, sys.getsizeof(1), constants.ZK_INT_BYTEORDER)
+                        value=int.to_bytes(0, sys.getsizeof(0), constants.ZK_INT_BYTEORDER)
                     )
                 logger.info('Configuration file uploaded successfully!')
             
             if args.administrative_priority:
+                logger.info(
+                    'Priority for queue {queue} set to {priority}'
+                    .format(queue = args.name, priority = args.administrative_priority)
+                )
                 zk.ensure_path(constants.QUEUE_CONFIG_ADMINISTRATIVE_PRIORITY_TEMPLATE.format(queue_name = args.name))
                 zk.set(
                     path=constants.QUEUE_CONFIG_ADMINISTRATIVE_PRIORITY_TEMPLATE.format(queue_name = args.name),
-                    value=int.to_bytes(args.administrative_priority, sys.getsizeof(1), constants.ZK_INT_BYTEORDER)
+                    value=int.to_bytes(args.administrative_priority, sys.getsizeof(args.administrative_priority), constants.ZK_INT_BYTEORDER)
                 )
 
             # create queue
