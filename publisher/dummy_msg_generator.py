@@ -10,6 +10,7 @@ import logging
 import uuid
 import random
 import datetime
+import time
 
 # connection auxiliary formating functions
 import worker_functions.connection_aux_functions as cf
@@ -69,9 +70,21 @@ def parse_args():
     )
     parser.add_argument(
         '-n', '--number',
-        help='Number of messages to generate.',
+        help='Number of messages to generate at once.',
         type=int,
         default=1
+    )
+    parser.add_argument(
+        '-i', '--interval',
+        help='Interval in which the messages will be periodically generated',
+        type=int,
+        default=0  # disabled
+    )
+    parser.add_argument(
+        '-c', '--count',
+        help='Number of iterations (count how many times should periodic messages be generated)',
+        type=int,
+        default=0  # disabled
     )
     parser.add_argument(
         '-t', '--stages',
@@ -93,10 +106,12 @@ class DummyMsgGenerator(MQClient):
     def __del__(self):
         super().__del__()
     
-    def gen_trafic(self, number, stages, priority, size_min, size_max):
+    def gen_trafic(self, number, interval, count, stages, priority, size_min, size_max):
         """
         Generates messages with given parameters
-        :param number: number of messages to generate
+        :param number: number of messages to generate at once
+        :param interval: interval in which messages will be periodically generated
+        :param count: repetition count (how many times messages will be generated)
         :param stages: stages of message
         :param priority: priority of message
         :param size_range_min: minimal size of message data
@@ -104,17 +119,35 @@ class DummyMsgGenerator(MQClient):
         """
         self.mq_channel.confirm_delivery()
 
-        for i in range(0, number):
-            data = os.urandom(int(random.uniform(size_min, size_max)))
-            message = self.create_msg(data, stages, priority)
-            try:
-                self.mq_channel.basic_publish('', stages[0], message.SerializeToString(),
-                    properties=pika.BasicProperties(delivery_mode=2, priority=message.priority),
-                    mandatory=True
-                )
-            except pika.exceptions.UnroutableError as e:
-                logger.error('Message was rejected by the MQ broker!')
-                logger.error('Received error: {}'.format(e))
+        iteration = 0
+        unlimited = False
+        if not count:
+            unlimited = True
+
+        while True:
+            logger.info(
+                'Iteration {iteration}, generating {number} messages'
+                .format(iteration = iteration, number = number)
+            )
+            for i in range(0, number):
+                data = os.urandom(int(random.uniform(size_min, size_max)))
+                message = self.create_msg(data, stages, priority)
+                try:
+                    self.mq_channel.basic_publish('', stages[0], message.SerializeToString(),
+                        properties=pika.BasicProperties(delivery_mode=2, priority=message.priority),
+                        mandatory=True
+                    )
+                except pika.exceptions.UnroutableError as e:
+                    logger.error('Message was rejected by the MQ broker!')
+                    logger.error('Received error: {}'.format(e))
+
+            logger.info('Waiting for {} seconds'.format(interval))
+            time.sleep(interval)
+
+            iteration += 1
+
+            if not unlimited and iteration >= count:
+                break
     
     @staticmethod
     def create_msg(data, stages, priority):
@@ -161,7 +194,11 @@ def main():
 
     # connect to mq
     generator = DummyMsgGenerator(mq_servers, logger)
-    generator.mq_connect()
+    if args.interval:
+        heartbeat = args.interval + 20
+    else:
+        heartbeat = 60
+    generator.mq_connect(heartbeat = heartbeat)
 
     if args.size_range:
         size_min = args.size_range[0]
@@ -173,9 +210,15 @@ def main():
     if size_min > size_max:
         logger.error('Minimal size cannot be biger than maximum size!')
         return 1
+    
+    if args.count < 0:
+        logger.error('\'--count\' can\'t be lower than zero!')
+        return 1
 
     try:
-        generator.gen_trafic(args.number, args.stages, args.priority, size_min, size_max)
+        generator.gen_trafic(args.number, args.interval, args.count, args.stages, args.priority, size_min, size_max)
+    except KeyboardInterrupt:
+        logger.info('Keyboard interrupt received! Exiting!')
     except Exception:
         logger.error('Failed to generate trafic!')
         logger.error('Received error:\n{}'.format(traceback.format_exc()))
