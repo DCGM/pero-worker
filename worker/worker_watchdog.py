@@ -256,7 +256,7 @@ class WorkerWatchdog(ZkClient):
                 try:
                     waiting_time = (self.last_sample_time - datetime.datetime.fromisoformat(queue_zk_stats[queue['name']]['waiting_since'])).total_seconds()
                 except Exception:
-                    self.logger.warn('Failed to parse waiting time of queue {}, schduling might not be accurate!'.format(queue['name']))
+                    self.logger.warning('Failed to parse waiting time of queue {}, schduling might not be accurate!'.format(queue['name']))
                     waiting_time = 0
 
             # calcuate priority for the queue
@@ -293,11 +293,11 @@ class WorkerWatchdog(ZkClient):
         try:
             workers = self.zk.get_children(constants.WORKER_STATUS)
         except kazoo.exceptions.NoNodeError:
-            self.logger.warn('Could not get worker statistics, no worker statistics are not defined in zookeeper!')
+            self.logger.warning('Could not get worker statistics, no worker statistics are not defined in zookeeper!')
             return {}
 
         if not workers:
-            self.logger.warn('Could not get worker statistics, no workers are connected!')
+            self.logger.warning('Could not get worker statistics, no workers are connected!')
             return {}
         
         worker_stats = {}
@@ -307,7 +307,7 @@ class WorkerWatchdog(ZkClient):
                 status = self.zk.get(constants.WORKER_STATUS_TEMPLATE.format(
                     worker_id = worker))[0].decode('utf-8')
             except kazoo.exceptions.NoNodeError:
-                self.logger.warn(
+                self.logger.warning(
                     'Worker {} does not have status field defind in zookeeper!'
                     .format(worker)
                 )
@@ -317,7 +317,7 @@ class WorkerWatchdog(ZkClient):
             if status == constants.STATUS_DEAD:
                 continue
             if status == constants.STATUS_FAILED:
-                self.logger.warn('Failed worker found! Worker id: {}'.format(worker))
+                self.logger.warning('Failed worker found! Worker id: {}'.format(worker))
                 # TODO
                 # notify admin
                 continue
@@ -332,7 +332,7 @@ class WorkerWatchdog(ZkClient):
                 worker_stats[worker]['unlock_time'] = self.zk.get(constants.WORKER_UNLOCK_TIME.format(
                     worker_id = worker))[0].decode('utf-8')
             except kazoo.exceptions.NoNodeError:
-                self.logger.warn(
+                self.logger.warning(
                     'Worker {} does not have all fields defined in zookeeper!'
                     .format(worker)
                 )
@@ -523,7 +523,7 @@ class WorkerWatchdog(ZkClient):
                     try:
                         unlock_time = datetime.datetime.fromisoformat(worker_stats[worker]['unlock_time'])
                     except Exception:
-                        self.logger.warn('Failed to parse worker unlock time of worker {}, scheduling might be inaccurate!'.format(worker))
+                        self.logger.warning('Failed to parse worker unlock time of worker {}, scheduling might be inaccurate!'.format(worker))
                         unlock_time = self.last_sample_time
                     
                     # check if worker can switch
