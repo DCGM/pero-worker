@@ -21,7 +21,7 @@ class MQClient:
         self.mq_connection = None
         self.mq_channel = None
     
-    def mq_connect(self):
+    def mq_connect(self, heartbeat = 60):
         """
         Connect to message broker
         """
@@ -31,7 +31,8 @@ class MQClient:
                 self.mq_connection = pika.BlockingConnection(
                     pika.ConnectionParameters(
                         host=server['ip'],
-                        port=server['port'] if server['port'] else pika.ConnectionParameters.DEFAULT_PORT
+                        port=server['port'] if server['port'] else pika.ConnectionParameters.DEFAULT_PORT,
+                        heartbeat=heartbeat
                     )
                 )
                 self.logger.info('Opening channel to MQ.')
