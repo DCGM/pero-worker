@@ -97,13 +97,13 @@ def parse_args():
         '-b', '--broker-servers',
         help='List of message queue broker servers where to get and send processing requests',
         nargs='+',
-        default=['127.0.0.1']
+        default=[]
     )
     argparser.add_argument(
         '-f', '--ftp-servers',
         help='List of ftp servers.',
         nargs='+',
-        default=['127.0.0.1']
+        default=[]
     )
     argparser.add_argument(
         '-q', '--queue',
@@ -189,6 +189,7 @@ class Worker(object):
         # queue statistics
         self.queue_stats_processed_messages = 0  # number of processed messages
         self.queue_stats_total_processing_time = 0  # time spend on processing messages
+        self.queue_stats_lock = None  # zookeeper lock for queue stats update
 
     def clean_tmp_files(self, path=None):
         """
@@ -235,7 +236,9 @@ class Worker(object):
         """
         Connects to ftp
         """
+        self.ftp_servers_lock.acquire()
         self.ftp = cf.ftp_connect(self.ftp_servers, logger)
+        self.ftp_servers_lock.release()
         if not self.ftp:
             raise ConnectionError('Failed to connect to ftp servers!')
         self.ftp.login(self.user, self.password)
@@ -317,9 +320,16 @@ class Worker(object):
         # and block processing of all new requests from this queue
         self.processing_lock.acquire()
 
-        # stop processing of cureent queue and report statistics
+        # stop processing of cureent queue
         self.stop_processing()
-        logger.info('Switching queue to {}'.format(queue))
+        
+        # unblock processing for channel to close
+        self.switch_queue_lock.release()
+        self.processing_lock.release()
+        if not self.mq_channel_closed(timeout=6):
+            logger.warning('Switching queue without closing channel!')
+
+        # and report statistics
         self.update_status(constants.STATUS_RECONFIGURING)
         self.update_queue_statistics()
 
@@ -327,25 +337,38 @@ class Worker(object):
         self.queue_stats_processed_messages = self.queue_stats_total_processing_time = 0
 
         # switch queue
+        logger.info('Switching queue to {}'.format(queue))
         self.queue = queue
+
+        # get lock for given queue statistic from the zookeeper
+        try:
+            self.queue_stats_lock = self.zk.Lock(
+                constants.QUEUE_STATS_AVG_MSG_TIME_LOCK_TEMPLATE.format(queue_name = self.queue),
+                identifier=self.worker_id
+            )
+        except Exception:  # kazoo.exceptions.ZookeeperError
+            self.update_status(constants.STATUS_FAILED)
+            logger.error(
+                'Failed to switch queue to {}, could not get lock for average message time statistics!'
+                .format(self.queue)
+            )
+            logger.error('Received error:\n{}'.format(traceback.format_exc()))
+            return
 
         # load OCR data and configuration
         try:
-            self.ocr_load(queue)
+            self.ocr_load(self.queue)
         except Exception:
             self.update_status(constants.STATUS_FAILED)
-            logger.error('Failed to switch queue to {}, could not get configuration for given processing stage!'.format(
-                queue
-            ))
-            logger.error('{}'.format(traceback.format_exc()))
+            logger.error(
+                'Failed to switch queue to {}, could not get configuration for given processing stage!'
+                .format(self.queue)
+            )
+            logger.error('Received error:\n{}'.format(traceback.format_exc()))
         else:
             self.update_status(constants.STATUS_IDLE)
             # start processing of new queue
             self.mq_channel_create(self.mq_connection)
-        finally:
-            # unblock processing and switching to new queue
-            self.switch_queue_lock.release()
-            self.processing_lock.release()
     
     def zk_callback_shutdown(self, data, status, *args):
         """
@@ -391,21 +414,23 @@ class Worker(object):
         avg_msg_time = self.queue_stats_total_processing_time / self.queue_stats_processed_messages
         logger.debug('Updating queue statistics for queue {}'.format(self.queue))
 
-        # get lock for given statistic from zookeeper
-        try:
-            queue_stats_lock = self.zk.Lock(
-                constants.QUEUE_STATS_AVG_MSG_TIME_LOCK_TEMPLATE.format(queue_name = self.queue),
-                identifier=self.worker_id
-            )
-        except Exception as e:  # kazoo.exceptions.ZookeeperError
-            logger.error(
-                'Failed to get lock for average message time statistics for queue {}!'
-                .format(self.queue)
-            )
-            logger.error('Received error:\n{}'.format(traceback.format_exc()))
-            return
-
-        queue_stats_lock.acquire()
+        # Zookeeper deadlock workaround
+        # retries to acquire the queue_stats_lock when first acquisition fails
+        retry = 2
+        while True:
+            try:
+                self.queue_stats_lock.acquire(timeout=20)
+            except kazoo.exceptions.LockTimeout:
+                logger.error('Failed to acquire lock for time statistics!')
+                retry -= 1
+                if retry <= 0:
+                    logger.error('Failed to update statistics for queue {}!'.format(self.queue))
+                    return
+                else:
+                    logger.info('Trying to acquire lock again')
+            else:
+                break
+        
         try:
             # get queue average processing time from zookeeper
             zk_msg_time = self.zk.get(constants.QUEUE_STATS_AVG_MSG_TIME_TEMPLATE.format(
@@ -444,7 +469,7 @@ class Worker(object):
             self.queue_stats_total_processing_time = self.queue_stats_processed_messages = 0
             logger.debug('Statistics updated!')
         finally:
-            queue_stats_lock.release()
+            self.queue_stats_lock.release()
     
     def gen_id(self):
         """
@@ -526,6 +551,29 @@ class Worker(object):
         
         os.makedirs(self.tmp_directory)
     
+    def mq_channel_closed(self, timeout = 3):
+        """
+        Wait for channel to close
+        :param timeout: wait maximum of (timeout * 10) second for channel to close
+        :return: True if channel closes in time, False otherwise
+        :precondition: channel close() method is called
+        """
+        if not self.mq_channel:
+            return True
+        
+        if not self.mq_channel.is_closed:
+            logger.info('Waiting for channel to close')
+
+        while not self.mq_channel.is_closed and timeout:
+            time.sleep(10)
+            timeout -= 1
+    
+        if not self.mq_channel.is_closed and not timeout:
+            logger.error('Channel close timeout exceeded!')
+            return False
+        
+        return True
+    
     def mq_disconnect(self):
         """
         Stops connection to message broker
@@ -534,6 +582,8 @@ class Worker(object):
             self.stop_processing()
         
         if self.mq_connection and self.mq_connection.is_open:
+            if not self.mq_channel_closed(timeout=3):
+                logger.warning('Closing connection without channel closed!')
             self.mq_connection.close()
             self.mq_connection.ioloop.stop()
 
@@ -746,7 +796,7 @@ class Worker(object):
                         logger.error('Request was pushed back to queue {}!'.format(log.stage))
                         channel.basic_nack(delivery_tag = method.delivery_tag, requeue = True)
                     else:
-                        logger.warn('Sending request to output queue instead!')
+                        logger.warning('Sending request to output queue instead!')
                         log.log += 'Failed delivery to queue {}!\n'.format(next_stage)
                         log.status = 'Failed'
                         next_stage = processing_request.processing_stages[-1]
