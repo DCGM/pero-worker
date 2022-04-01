@@ -13,6 +13,7 @@ from stats import StatsCounter
 
 # connection auxiliary formating functions
 import worker_functions.connection_aux_functions as cf
+from worker_functions.mq_client import MQClient
 
 # config
 import worker_functions.constants as constants
@@ -115,15 +116,20 @@ def parse_args():
         default=False,
         action='store_true'
     )
+    parser.add_argument(
+        '--save-message',
+        help='Save message data for future use.',
+        default=False,
+        action='store_true'
+    )
     return parser.parse_args()
 
-class Publisher:
-    def __init__(self, mq_servers, count_stats = False):
-        # list of servers to use
-        self.mq_servers = mq_servers
-        # connection to message broker
-        self.mq_connection = None
-        self.mq_channel = None
+class Publisher(MQClient):
+    def __init__(self, mq_servers, count_stats = False, save_message = False):
+        super().__init__(
+            mq_servers = mq_servers,
+            logger = logger
+        )
         # Flag to stop downloading from queue
         self.queue_empty = False
         # Flag to detect delivery failure
@@ -137,37 +143,11 @@ class Publisher:
             self.stats_counter = StatsCounter(logger = logger)
         else:
             self.stats_counter = None
+        # save messages to file in protobuf format
+        self.save_message = save_message
     
-    def mq_connect(self):
-        """
-        Connect to message broker
-        """
-        for server in self.mq_servers:
-            try:
-                logger.info('Connectiong to MQ server {}'.format(cf.ip_port_to_string(server)))
-                self.mq_connection = pika.BlockingConnection(
-                    pika.ConnectionParameters(
-                        host=server['ip'],
-                        port=server['port'] if server['port'] else pika.ConnectionParameters.DEFAULT_PORT
-                    )
-                )
-                logger.info('Opening channel to MQ.')
-                self.mq_channel = self.mq_connection.channel()
-            except pika.exceptions.AMQPError as e:
-                logger.error('Connection failed! Received error: {}'.format(e))
-                continue
-            else:
-                break
-    
-    def mq_disconnect(self):
-        """
-        Stops connection to message broker
-        """
-        if self.mq_channel and self.mq_channel.is_open:
-            self.mq_channel.close()
-        
-        if self.mq_connection and self.mq_connection.is_open:
-            self.mq_connection.close()
+    def __del__(self):
+        super().__del__()
     
     def mq_save_result(self, method, properties, body):
         """
@@ -207,7 +187,10 @@ class Publisher:
         
         if self.stats_counter:
             self.stats_counter.update_message_statistics(message)
-
+        
+        if self.save_message:
+            with open(os.path.join(directory, 'message_body'), 'wb') as file:
+                file.write(body)
     
     def mq_get_results(self, queue, directory):
         """
@@ -421,7 +404,7 @@ def main():
         return 1
 
     # connect to mq
-    publisher = Publisher(mq_servers, count_stats=args.count_statistics)
+    publisher = Publisher(mq_servers, count_stats=args.count_statistics, save_message=args.save_message)
     publisher.mq_connect()
 
     error_code = 0
