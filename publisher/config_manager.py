@@ -291,7 +291,7 @@ def main():
                     )
                 logger.info('Configuration file uploaded successfully!')
             
-            if args.administrative_priority:
+            if isinstance(args.administrative_priority, int):
                 logger.info(
                     'Priority for queue {queue} set to {priority}'
                     .format(queue = args.name, priority = args.administrative_priority)
