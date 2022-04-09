@@ -15,6 +15,7 @@ import configparser
 import threading
 import datetime
 from ftplib import FTP, all_errors, error_perm
+from io import StringIO  # logging to message
 
 # dummy processing
 import random
@@ -47,7 +48,7 @@ import worker_functions.connection_aux_functions as cf
 # === Global config ===
 
 # setup logging (required by kazoo)
-log_formatter = logging.Formatter('%(asctime)s %(levelname)s WORKER: %(message)s')
+log_formatter = logging.Formatter('%(asctime)s WORKER %(levelname)s %(message)s')
 
 stderr_handler = logging.StreamHandler()
 stderr_handler.setFormatter(log_formatter)
@@ -57,6 +58,7 @@ logger.setLevel(logging.INFO)
 # TODO - remove debug level
 logger.setLevel(logging.DEBUG)
 logger.addHandler(stderr_handler)
+logger.propagate = False
 
 
 # === Functions ===
@@ -136,7 +138,17 @@ class Worker(object):
     Pero processing worker
     """
 
-    def __init__(self, user, password, zookeeper_servers, mq_servers = [], ftp_servers = [], worker_id = None, tmp_directory = None):
+    def __init__(
+        self,
+        user,
+        password,
+        zookeeper_servers,
+        mq_servers = [],
+        ftp_servers = [],
+        worker_id = None,
+        tmp_directory = None,
+        logger = logging.getLogger(__name__)
+    ):
         """
         Initialize worker
         :param worker_id: worker identifier
@@ -191,6 +203,13 @@ class Worker(object):
         self.queue_stats_total_processing_time = 0  # time spend on processing messages
         self.queue_stats_lock = None  # zookeeper lock for queue stats update
 
+        # logging
+        self.logger = logger
+
+        # logging to message log
+        self.message_logger = logging.getLogger()
+        self.message_logger.setLevel(logging.DEBUG)
+
     def clean_tmp_files(self, path=None):
         """
         Removes temporary files and directories recursively
@@ -224,20 +243,20 @@ class Worker(object):
         """
         Cleans up connections and temporary files before worker stops
         """
-        logger.info('Closing connection and cleaning up')
+        self.logger.info('Closing connection and cleaning up')
         #self.update_status(constants.STATUS_DEAD)
         self.mq_disconnect()
         self.ftp_disconnect()
         self.zk_disconnect()
         self.clean_tmp_files()
-        logger.debug('Cleanup complete!')
+        self.logger.debug('Cleanup complete!')
     
     def ftp_connect(self):
         """
         Connects to ftp
         """
         self.ftp_servers_lock.acquire()
-        self.ftp = cf.ftp_connect(self.ftp_servers, logger)
+        self.ftp = cf.ftp_connect(self.ftp_servers, self.logger)
         self.ftp_servers_lock.release()
         if not self.ftp:
             raise ConnectionError('Failed to connect to ftp servers!')
@@ -259,8 +278,8 @@ class Worker(object):
                 try:
                     self.ftp.close()
                 except Exception:
-                    logger.error('Error occured during disconnecting from FTP!')
-                    logger.error('{}'.format(traceback.format_exc()))
+                    self.logger.error('Error occured during disconnecting from FTP!')
+                    self.logger.error('{}'.format(traceback.format_exc()))
     
     def zk_disconnect(self):
         """
@@ -271,8 +290,8 @@ class Worker(object):
                 self.zk.stop()
                 self.zk.close()
             except kazoo.exceptions.KazooException as e:
-                logger.error('Failed to close zookeeper connection!')
-                logger.error('Received error: {}'.format(traceback.format_exc()))
+                self.logger.error('Failed to close zookeeper connection!')
+                self.logger.error('Received error: {}'.format(traceback.format_exc()))
 
     def zk_connect(self):
         """
@@ -288,7 +307,7 @@ class Worker(object):
         try:
             self.zk.start(timeout=20)
         except KazooTimeoutError:
-            logger.error('Zookeeper connection timeout!')
+            self.logger.error('Zookeeper connection timeout!')
             raise
     
     def zk_callback_switch_queue(self, data, status, *args):
@@ -327,7 +346,7 @@ class Worker(object):
         self.switch_queue_lock.release()
         self.processing_lock.release()
         if not self.mq_channel_closed(timeout=6):
-            logger.warning('Switching queue without closing channel!')
+            self.logger.warning('Switching queue without closing channel!')
 
         # and report statistics
         self.update_status(constants.STATUS_RECONFIGURING)
@@ -337,7 +356,7 @@ class Worker(object):
         self.queue_stats_processed_messages = self.queue_stats_total_processing_time = 0
 
         # switch queue
-        logger.info('Switching queue to {}'.format(queue))
+        self.logger.info('Switching queue to {}'.format(queue))
         self.queue = queue
 
         # get lock for given queue statistic from the zookeeper
@@ -348,11 +367,11 @@ class Worker(object):
             )
         except Exception:  # kazoo.exceptions.ZookeeperError
             self.update_status(constants.STATUS_FAILED)
-            logger.error(
+            self.logger.error(
                 'Failed to switch queue to {}, could not get lock for average message time statistics!'
                 .format(self.queue)
             )
-            logger.error('Received error:\n{}'.format(traceback.format_exc()))
+            self.logger.error('Received error:\n{}'.format(traceback.format_exc()))
             return
 
         # load OCR data and configuration
@@ -360,11 +379,11 @@ class Worker(object):
             self.ocr_load(self.queue)
         except Exception:
             self.update_status(constants.STATUS_FAILED)
-            logger.error(
+            self.logger.error(
                 'Failed to switch queue to {}, could not get configuration for given processing stage!'
                 .format(self.queue)
             )
-            logger.error('Received error:\n{}'.format(traceback.format_exc()))
+            self.logger.error('Received error:\n{}'.format(traceback.format_exc()))
         else:
             self.update_status(constants.STATUS_IDLE)
             # start processing of new queue
@@ -379,7 +398,7 @@ class Worker(object):
         """
         enabled = data.decode('utf-8').lower()
         if enabled != 'true':
-            logger.info('Shutdown signal received!')
+            self.logger.info('Shutdown signal received!')
             self.enabled = False
             self.update_status(constants.STATUS_DEAD)
             self.mq_disconnect()
@@ -412,7 +431,7 @@ class Worker(object):
         
         # get averate processing time for current queue
         avg_msg_time = self.queue_stats_total_processing_time / self.queue_stats_processed_messages
-        logger.debug('Updating queue statistics for queue {}'.format(self.queue))
+        self.logger.debug('Updating queue statistics for queue {}'.format(self.queue))
 
         # Zookeeper deadlock workaround
         # retries to acquire the queue_stats_lock when first acquisition fails
@@ -421,13 +440,13 @@ class Worker(object):
             try:
                 self.queue_stats_lock.acquire(timeout=20)
             except kazoo.exceptions.LockTimeout:
-                logger.error('Failed to acquire lock for time statistics!')
+                self.logger.error('Failed to acquire lock for time statistics!')
                 retry -= 1
                 if retry <= 0:
-                    logger.error('Failed to update statistics for queue {}!'.format(self.queue))
+                    self.logger.error('Failed to update statistics for queue {}!'.format(self.queue))
                     return
                 else:
-                    logger.info('Trying to acquire lock again')
+                    self.logger.info('Trying to acquire lock again')
             else:
                 break
         
@@ -448,26 +467,26 @@ class Worker(object):
                 value=float(avg_msg_time).hex().encode('utf-8')
             )
         except kazoo.exceptions.ZookeeperError:
-            logger.error(
+            self.logger.error(
                 'Failed to update average processing time for queue {} due to zookeeper error!'
                 .format(self.queue)
             )
-            logger.error('Received error:\n{}'.format(traceback.format_exc()))
+            self.logger.error('Received error:\n{}'.format(traceback.format_exc()))
         except ValueError:
-            logger.error(
+            self.logger.error(
                 'Failed to update average processing time for queue {} due to wrong number format in zookeeper!'
                 .format(self.queue)
             )
         except Exception:
-            logger.error(
+            self.logger.error(
                 'Failed to update average processing time for queue {} due to unknown error!'
                 .format(self.queue)
             )
-            logger.error('Received error:\n{}'.format(traceback.format_exc()))
+            self.logger.error('Received error:\n{}'.format(traceback.format_exc()))
         else:
             # reset counters
             self.queue_stats_total_processing_time = self.queue_stats_processed_messages = 0
-            logger.debug('Statistics updated!')
+            self.logger.debug('Statistics updated!')
         finally:
             self.queue_stats_lock.release()
     
@@ -496,7 +515,7 @@ class Worker(object):
         self.status = status
 
         if self.zk.state != KazooState.CONNECTED:
-            logger.error('Failed to update status in zookeeper. Zookeeper connection lost!')
+            self.logger.error('Failed to update status in zookeeper. Zookeeper connection lost!')
             self.status_lock.release()
             return
         
@@ -562,14 +581,14 @@ class Worker(object):
             return True
         
         if not self.mq_channel.is_closed:
-            logger.info('Waiting for channel to close')
+            self.logger.info('Waiting for channel to close')
 
         while not self.mq_channel.is_closed and timeout:
             time.sleep(10)
             timeout -= 1
     
         if not self.mq_channel.is_closed and not timeout:
-            logger.error('Channel close timeout exceeded!')
+            self.logger.error('Channel close timeout exceeded!')
             return False
         
         return True
@@ -583,7 +602,7 @@ class Worker(object):
         
         if self.mq_connection and self.mq_connection.is_open:
             if not self.mq_channel_closed(timeout=3):
-                logger.warning('Closing connection without channel closed!')
+                self.logger.warning('Closing connection without channel closed!')
             self.mq_connection.close()
             self.mq_connection.ioloop.stop()
 
@@ -595,13 +614,13 @@ class Worker(object):
         self.mq_server_lock.acquire()
 
         if not self.mq_servers:
-            logger.error('No MQ servers available!')
+            self.logger.error('No MQ servers available!')
             self.update_status(constants.STATUS_FAILED)
             self.mq_server_lock.release()
             return
         
         if self.mq_connection_retry == len(self.mq_servers):
-            logger.error('Failed to connect to any MQ servers!')
+            self.logger.error('Failed to connect to any MQ servers!')
             self.update_status(constants.STATUS_FAILED)
             self.mq_server_lock.release()
             return
@@ -622,7 +641,7 @@ class Worker(object):
         self.mq_server_lock.release()
         
         # connect to selected mq server
-        logger.info('Connecting to MQ server {}'.format(cf.ip_port_to_string(self.mq_server)))
+        self.logger.info('Connecting to MQ server {}'.format(cf.ip_port_to_string(self.mq_server)))
         self.mq_connection = pika.SelectConnection(
             pika.ConnectionParameters(
                 host=self.mq_server['ip'],
@@ -640,7 +659,7 @@ class Worker(object):
         Callback for reporting successfully established connection to mq broker.
         :param connection: message broker connection - same as self.mq_connection
         """
-        logger.info('Connection to MQ establisted successfully')
+        self.logger.info('Connection to MQ establisted successfully')
         self.mq_server_lock.acquire()
         self.mq_connection_retry = 0
         self.mq_server_lock.release()
@@ -651,7 +670,7 @@ class Worker(object):
         :param connection: broker connection - same as self.mq_connection
         :param error: exception generated on close
         """
-        logger.error('Connection to MQ failed to open! Received error: {}'.format(error))
+        self.logger.error('Connection to MQ failed to open! Received error: {}'.format(error))
         self.mq_connect()
     
     def mq_connection_close(self, connection, reason):
@@ -660,7 +679,7 @@ class Worker(object):
         :param connection: broker connection - same as self.mq_connection
         :param reason: reason why was connection closed
         """
-        logger.warning('Connection to MQ closed, reason: {}'.format(reason))
+        self.logger.warning('Connection to MQ closed, reason: {}'.format(reason))
         if not self.enabled:
             self.update_status(constants.STATUS_DEAD)
         else:
@@ -671,7 +690,7 @@ class Worker(object):
         Create broker channel
         :param connection: broker connection - same as self.mq_connection
         """
-        logger.info('Setting up MQ channel')
+        self.logger.info('Setting up MQ channel')
         self.mq_connection.channel(on_open_callback=self.mq_channel_setup)
 
     def mq_channel_setup(self, channel):
@@ -684,7 +703,7 @@ class Worker(object):
         
         self.mq_channel = channel
 
-        logger.info('MQ Channel setup complete')
+        self.logger.info('MQ Channel setup complete')
 
         if self.queue:
             self.mq_queue_setup()
@@ -694,7 +713,7 @@ class Worker(object):
         Setup parameters for input queue
         """
         if not self.mq_channel or not self.mq_channel.is_open:
-            logger.error('Queue setup failed, mq channel is not open!')
+            self.logger.error('Queue setup failed, mq channel is not open!')
             return
 
         # register callback for data processing
@@ -721,14 +740,14 @@ class Worker(object):
         try:
             processing_request = ProcessingRequest().FromString(body)
         except Exception as e:
-            logger.error('Failed to parse received request!')
-            logger.error('Received error:\n{}'.format(traceback.format_exc()))
+            self.logger.error('Failed to parse received request!')
+            self.logger.error('Received error:\n{}'.format(traceback.format_exc()))
             channel.basic_nack(delivery_tag = method.delivery_tag, requeue = True)
         
         current_stage = processing_request.processing_stages[0]
 
-        logger.info(f'Processing request: {processing_request.uuid}')
-        logger.debug(f'Request stage: {current_stage}')
+        self.logger.info(f'Processing request: {processing_request.uuid}')
+        self.logger.debug(f'Request stage: {current_stage}')
 
         # log start of processing
         start_time = datetime.datetime.now(datetime.timezone.utc)
@@ -737,6 +756,11 @@ class Worker(object):
         log.stage = processing_request.processing_stages[0]
         log.status = 'Failed'
         Timestamp.FromDatetime(log.start, start_time)
+
+        # configure message logging
+        log_buffer = StringIO()
+        buffer_handler = logging.StreamHandler(log_buffer)
+        self.message_logger.addHandler(buffer_handler)
 
         try:
             dummy = self.config['WORKER']['DUMMY']
@@ -749,11 +773,11 @@ class Worker(object):
             else:
                 self.ocr_process_request(processing_request)
         except Exception as e:
-            logger.error('Failed to process request {request_id} using stage {stage}!'.format(
+            self.logger.error('Failed to process request {request_id} using stage {stage}!'.format(
                 request_id = processing_request.uuid,
                 stage = current_stage
             ))
-            logger.error('Received error:\n{}'.format(traceback.format_exc()))
+            self.logger.error('Received error:\n{}'.format(traceback.format_exc()))
 
             # Timestamp
             end_time = datetime.datetime.now(datetime.timezone.utc)
@@ -777,6 +801,12 @@ class Worker(object):
             processing_request.processing_stages.pop(0)
             next_stage = processing_request.processing_stages[0]
         finally:
+            # add buffered log to the message
+            log.log = log_buffer.getvalue()
+
+            # remove handler to prevent memory leak (buffer is discarded and never used again)
+            self.message_logger.removeHandler(buffer_handler)
+
             # send request to output queue and
             # acknowledge the request after successfull processing
             while True:
@@ -786,23 +816,23 @@ class Worker(object):
                         mandatory=True  # raise exception if message is rejected
                     )
                 except pika.exceptions.UnroutableError as e:
-                    logger.error('Failed to deliver processing request {request_id} to queue {queue}!'.format(
+                    self.logger.error('Failed to deliver processing request {request_id} to queue {queue}!'.format(
                         request_id = processing_request.uuid,
                         queue = next_stage
                     ))
-                    logger.error('Received error: {}'.format(e))
+                    self.logger.error('Received error: {}'.format(e))
 
                     if next_stage == processing_request.processing_stages[-1]:
-                        logger.error('Request was pushed back to queue {}!'.format(log.stage))
+                        self.logger.error('Request was pushed back to queue {}!'.format(log.stage))
                         channel.basic_nack(delivery_tag = method.delivery_tag, requeue = True)
                     else:
-                        logger.warning('Sending request to output queue instead!')
-                        log.log += 'Failed delivery to queue {}!\n'.format(next_stage)
+                        self.logger.warning('Sending request to output queue instead!')
+                        log.log += 'Delivery to queue {} failed!\n'.format(next_stage)
                         log.status = 'Failed'
                         next_stage = processing_request.processing_stages[-1]
                         continue
                 else:
-                    logger.debug('Acknowledging request {request_id} from queue {queue}'.format(
+                    self.logger.debug('Acknowledging request {request_id} from queue {queue}'.format(
                         request_id = processing_request.uuid,
                         queue = log.stage
                     ))
@@ -836,8 +866,8 @@ class Worker(object):
             error_msg = 'Failed to get request data from results!'
             received_error = 'Received error:\n{}'.format(traceback.format_exc())
             for msg in (error_msg, received_error):
-                logger.error(msg)
-                log.log += '{}\n'.format(msg)
+                self.logger.error(msg)
+                self.message_logger.error(msg)
             raise
 
         # get processing stage configuration
@@ -857,8 +887,8 @@ class Worker(object):
                 processing_time_diff_min = processing_time_diff_max = 0
         except (TypeError, ValueError):
             error_msg = 'Wrong dummy config time fromat for processing stage {}, value must be number!'.format(log.stage)
-            logger.error(error_msg)
-            log.log += '{}\n'.format(error_msg)
+            self.logger.error(error_msg)
+            self.message_logger.error(error_msg)
             raise
         
         if not processing_time_diff_max and not processing_time_diff_min:
@@ -867,8 +897,8 @@ class Worker(object):
         
         if processing_time_diff_min > processing_time_diff_max:
             error_msg = 'Wrong dummy config for processing stage {}, mimimal processing time cannot be higher than maximal processing time!'.format(log.stage)
-            logger.error(error_msg)
-            log.log += '{}\n'.format(error_msg)
+            self.logger.error(error_msg)
+            self.message_logger.error(error_msg)
             raise
 
         # get processing time
@@ -877,16 +907,16 @@ class Worker(object):
             processing_time = 0
 
         # processing
-        logger.info('Dummy processing, waiting for {} seconds'.format(processing_time))
-        log.log += 'Dummy processing time: {} seconds\n'.format(processing_time)
-        log.log += 'Request data size: {}\n'.format(data_size)
+        self.logger.info('Dummy processing, waiting for {} seconds'.format(processing_time))
+        self.message_logger.info('Dummy processing time: {} seconds'.format(processing_time))
+        self.message_logger.info('Request data size: {}'.format(data_size))
         if processing_time_scale != 1:
-            log.log += 'Processing time scale: {}\n'.format(processing_time_scale)
+            self.message_logger.info('Processing time scale: {}'.format(processing_time_scale))
         if time_delta:
-            log.log += 'Time delta: {}\n'.format(time_delta)
+            self.message_logger.info('Time delta: {}'.format(time_delta))
         elif processing_time_diff_max or processing_time_diff_min:
-            log.log += 'Time difference min: {}\n'.format(processing_time_diff_min)
-            log.log += 'Time difference max: {}\n'.format(processing_time_diff_max)
+            self.message_logger.info('Time difference min: {}'.format(processing_time_diff_min))
+            self.message_logger.info('Time difference max: {}'.format(processing_time_diff_max))
         time.sleep(processing_time)
 
     def ocr_process_request(self, processing_request):
@@ -894,14 +924,6 @@ class Worker(object):
         Process processing request using OCR
         :param processing_request: processing request to work on
         """
-        # TODO
-        # add logger output to message log
-
-        # get log for this stage
-        for log in processing_request.logs:
-            if log.stage == processing_request.processing_stages[0]:
-                break
-
         # load data
         img = None
         xml_in = None
@@ -910,7 +932,7 @@ class Worker(object):
         for i, data in enumerate(processing_request.results):
             ext = os.path.splitext(data.name)[1]
             datatype = magic.from_buffer(data.content, mime=True)
-            logger.debug(f'File: {data.name}, type: {datatype}')
+            self.logger.debug(f'File: {data.name}, type: {datatype}')
             if datatype.split('/')[0] == 'image':  # recognize image
                 img = cv2.imdecode(np.fromstring(processing_request.results[i].content, dtype=np.uint8), 1)
             if ext == '.xml':  # pagexml is missing xml header - type can't be recognized - type = text/plain
@@ -930,8 +952,8 @@ class Worker(object):
             page_layout = self.page_parser.process_page(img, page_layout)
         except Exception as e:
             # processing failed
-            log.log += '{error}\n'.format(error = e)
-            log.log += traceback.format_exc()
+            self.message_logger.error('{error}'.format(error = e))
+            self.message_logger.error('Received traceback:\n{}'.format(traceback.format_exc()))
             raise
         
         # save output
@@ -977,7 +999,7 @@ class Worker(object):
             config_content = self.zk.get(constants.QUEUE_CONFIG_TEMPLATE.format(queue_name=name))[0].decode('utf-8')
         except (kazoo.exceptions.NoNodeError, kazoo.exceptions.ZookeeperError) as e:
             self.update_status(constants.STATUS_FAILED)
-            logger.error('Failed to get configuration for queue {}'.format(name))
+            self.logger.error('Failed to get configuration for queue {}'.format(name))
             # stop reconfiguration if config can't be downloaded
             raise
         with open(config_file_name, 'w') as config_file:
@@ -991,10 +1013,10 @@ class Worker(object):
         try:
             self.ftp_connect()
         except error_perm:
-            logger.critical('Wrong FTP server password!')
+            self.logger.critical('Wrong FTP server password!')
             raise
         except Exception:
-            logger.critical('Failed to connect to ftp servers!')
+            self.logger.critical('Failed to connect to ftp servers!')
             raise
 
         # get ocr data
@@ -1002,14 +1024,14 @@ class Worker(object):
             for key in self.config[section]:
                 try:
                     value = json.loads(self.config[section][key])
-                    logger.debug('Successfully parsed config field: {section}:{key}:{value}'.format(
+                    self.logger.debug('Successfully parsed config field: {section}:{key}:{value}'.format(
                         section = section,
                         key = key,
                         value = self.config[section][key]
                     ))
                 except json.decoder.JSONDecodeError:
                     # not a valid json
-                    logger.debug('Failed to parse config field: {section}:{key}:{value}'.format(
+                    self.logger.debug('Failed to parse config field: {section}:{key}:{value}'.format(
                         section = section,
                         key = key,
                         value = self.config[section][key]
@@ -1021,7 +1043,7 @@ class Worker(object):
                                 with open(os.path.join(self.ocr, value['path']), 'wb') as fd:
                                     self.ftp.retrbinary('RETR {}'.format(value['url']), fd.write)
                             except (PermissionError, all_errors) as e:
-                                logger.error('Failed to retreive file {url} and save it to {path}!'.format(
+                                self.logger.error('Failed to retreive file {url} and save it to {path}!'.format(
                                     path = value['path'],
                                     url = value['url']
                                 ))
@@ -1029,7 +1051,7 @@ class Worker(object):
                                 self.ftp_disconnect()
                                 raise
                             else:
-                                logger.debug('File {url} saved to {path}'.format(
+                                self.logger.debug('File {url} saved to {path}'.format(
                                     url = value['url'],
                                     path = value['path']
                                 ))
@@ -1075,21 +1097,21 @@ class Worker(object):
         try:
             self.zk_connect()
         except KazooTimeoutError:
-            logger.critical('Failed to connect to zookeeper!')
-            logger.critical('Initialization aboarded!')
+            self.logger.critical('Failed to connect to zookeeper!')
+            self.logger.critical('Initialization aboarded!')
             return 1
         
         # generate id
         if not self.worker_id:
             self.gen_id()
-        logger.info('Worker id: {}'.format(self.worker_id))
+        self.logger.info('Worker id: {}'.format(self.worker_id))
 
         # initialize worker status and sync with zookeeper
         try:            
             self.init_worker_status()
         except kazoo.exceptions.ZookeeperError:
-            logger.critical('Failed to register worker in zookeeper!')
-            logger.critical('Received error:\n{}'.format(traceback.format_exc()))
+            self.logger.critical('Failed to register worker in zookeeper!')
+            self.logger.critical('Received error:\n{}'.format(traceback.format_exc()))
             return 1
         
         # setup tmp directory
@@ -1106,8 +1128,8 @@ class Worker(object):
                 self.zk.get_children(constants.WORKER_CONFIG_FTP_SERVERS)
             )
         except kazoo.exceptions.ZookeeperError:
-            logger.critical('Failed to get lists of MQ and FTP servers!')
-            logger.critical('Received error:\n{}'.format(traceback.format_exc()))
+            self.logger.critical('Failed to get lists of MQ and FTP servers!')
+            self.logger.critical('Received error:\n{}'.format(traceback.format_exc()))
             return 1
 
         # register zookeeper callbacks:
@@ -1136,8 +1158,8 @@ class Worker(object):
         try:
             self.mq_connect()
         except Exception:
-            logger.critical('Failed to connect to message broker servers!')
-            logger.critical(traceback.format_exc())
+            self.logger.critical('Failed to connect to message broker servers!')
+            self.logger.critical(traceback.format_exc())
             return 1
 
         if self.queue:
@@ -1145,7 +1167,7 @@ class Worker(object):
         else:
             self.update_status(constants.STATUS_IDLE)
 
-        logger.info('Worker is running')
+        self.logger.info('Worker is running')
         # start processing queue
         try:
             # uses this thread for managing the MQ connection
@@ -1153,12 +1175,12 @@ class Worker(object):
             self.mq_connection.ioloop.start()  # TODO - run connection in diferent thread
         except KeyboardInterrupt:
             # TODO - debug keyboard interrupt - sometimes does not stop the ioloop
-            logger.info('Keyboard interrupt received! Shutting down!')
+            self.logger.info('Keyboard interrupt received! Shutting down!')
             self.mq_disconnect()
             self.update_status(constants.STATUS_DEAD)
         except Exception:
-            logger.critical('Connection to message broker failed!')
-            logger.critical(traceback.format_exc())
+            self.logger.critical('Connection to message broker failed!')
+            self.logger.critical(traceback.format_exc())
             self.update_status(constants.STATUS_FAILED)
             return 1
         
@@ -1182,6 +1204,7 @@ def main():
         mq_servers=mq_servers,
         ftp_servers=ftp_servers,
         tmp_directory=tmp_dir,
+        logger=logging.getLogger(__name__)
     )
 
     return worker.run()

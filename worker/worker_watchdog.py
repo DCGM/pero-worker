@@ -26,7 +26,7 @@ import worker_functions.connection_aux_functions as cf
 # === Global config ===
 
 # setup logging (required by kazoo)
-log_formatter = logging.Formatter('%(asctime)s %(levelname)s WATCHDOG: %(message)s')
+log_formatter = logging.Formatter('%(asctime)s WATCHDOG %(levelname)s %(message)s')
 
 stderr_handler = logging.StreamHandler()
 stderr_handler.setFormatter(log_formatter)
