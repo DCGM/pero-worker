@@ -3,6 +3,7 @@ kazoo
 pika
 protobuf
 python-magic
+requests
 
 # pero OCR dependencies
 numpy
