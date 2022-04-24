@@ -186,6 +186,8 @@ def main():
     
     # TODO
     # get queue status
+    if args.queues:
+        raise NotImplemented("Printing queue statistics is not supported yet!")
 
     # switch worker to diferent queue
     if args.switch:
@@ -200,6 +202,8 @@ def main():
 
     # TODO
     # run command in zookeeper
+    if args.command:
+        raise NotImplemented("Running command in zookeeper is not supported yet!")
 
     # shutdown worker
     if args.shutdown:

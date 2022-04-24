@@ -202,6 +202,9 @@ def mq_connect(mq_servers):
 def main():
     args = parse_args()
 
+    if args.file or args.target_file:
+        raise NotImplemented('File / Target File is not supported yet!')
+
     # get zookeeper server list
     zookeeper_servers = cf.zk_server_list(args.zookeeper)
     if args.zookeeper_list:
