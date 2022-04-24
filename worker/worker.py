@@ -108,15 +108,6 @@ def parse_args():
         default=[]
     )
     argparser.add_argument(
-        '-q', '--queue',
-        help='Queue with messages to process'
-    )
-    argparser.add_argument(
-        '--ocr',
-        help='Directory with OCR data and config file in .ini format',
-        type=dir_path
-    )
-    argparser.add_argument(
         '--tmp-directory',
         help='Path to directory where temporary files will be stored',
         type=dir_path
@@ -1064,7 +1055,6 @@ class Worker(object):
             dummy = self.config['WORKER']['DUMMY']
         except KeyError:
             dummy = None
-        if not dummy:
             self.page_parser = PageParser(self.config, self.ocr)
     
     def stop_processing(self):

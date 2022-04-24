@@ -445,7 +445,6 @@ class WorkerWatchdog(ZkClient):
         Adjusts processing by switching workers between queues.
         Checks for queue status and calculates priorities of queues based on current data.
         Updates waiting time of queues.
-        :return: list of queue priorities or none
         """
         # time when last statistics starts to download
         self.last_sample_time = datetime.datetime.now(datetime.timezone.utc)
