@@ -50,61 +50,127 @@ def parse_args():
 
 class StatsCounter:
 
+    record_template = {
+        'start': 0,  # start time
+        'end': 0     # end time
+    }
+
     stage_template = {
-        'wait': 0,  # total time messages spend in queue, waiting for processing in this stage (failed messages are not included)
-        'time': 0,  # total processing time of all messages for given stage (failed messages are not included)
-        'count': 0,  # message count  (failed messages exclueded)
+        'wait': [],  # total time messages spend in queue, waiting for processing in this stage (failed messages are not included)
+        'time': [],  # total processing time of all messages for given stage (failed messages are not included)
         'failed': 0  # failed message count
     }
 
     pipeline_template = {
         'stages': [],  # pipeline stages messages goes through
-        'time': 0,  # total pipeline time
-        'count': 0   # total pipeline message count
+        'time': [],  # total pipeline time
     }
 
     def __init__(self, logger = logging.getLogger(__name__)):
         self.logger = logger
-        self.time = 0  # total processing time (failed messages exclueded)
-        self.count = 0  # total message count (failed messages exclueded)
+        self.time = []  # total processing time (failed messages exclueded)
         self.failed = 0  # total number of failed messages
         self.stages = {}  # processing stages
         self.pipelines = []  # processing pipelines
     
-    def log_statistics(self):
+    @staticmethod
+    def get_time_average(timeline):
+        time = 0
+        for t in timeline:
+            time += (t['end'] - t['start']).total_seconds()
+        return time / len(timeline)
+
+    @staticmethod
+    def get_pipeline_stages(pipeline):
         """
-        Logs statistics using logger
+        Generates pipeline stage list in printable format
+        """
+        pipeline_stages = ''
+        for stage in pipeline['stages']:
+            if pipeline_stages:
+                pipeline_stages = '{stages} -> {stage}'.format(stages = pipeline_stages, stage = stage)
+            else:
+                pipeline_stages = '{}'.format(stage)
+        return pipeline_stages
+
+    def log_timeline(self, timeline):
+        """
+        Logs timeline
+        """
+        timeline.sort(key=lambda item: item['start'])
+        for record in timeline:
+            self.logger.info('{start}, {end}, {duration}'.format(
+                start = record['start'],
+                end = record['end'],
+                duration = (record['end'] - record['start']).total_seconds()
+            ))
+    
+    def log_total_statistics(self):
+        """
+        Logs total statistics for messages
         """
         self.logger.info(
             'Average message total processing time: {}'
-            .format((self.time / self.count) if self.count else 0)
+            .format(self.get_time_average(self.time))
         )
-        self.logger.info('Message count: {}'.format(self.count))
+        self.logger.info('Message count: {}'.format(len(self.time)))
         self.logger.info('Failed message count: {}'.format(self.failed))
+
+    def log_stages_statistics(self):
+        """
+        Logs statistics for stages
+        """
+        self.log_total_statistics()
         for stage in self.stages:
             self.logger.info('Statistics for stage {}:'.format(stage))
             self.logger.info(
                 'Average stage processing time: {}'
-                .format((self.stages[stage]['time'] / self.stages[stage]['count']) if self.stages[stage]['count'] else 0)
+                .format(self.get_time_average(self.stages[stage]['time']))
             )
             self.logger.info(
                 'Average stage waiting time: {}'
-                .format((self.stages[stage]['wait'] / self.stages[stage]['count']) if self.stages[stage]['count'] else 0))
-            self.logger.info('Total stage message count: {}'.format(self.stages[stage]['count']))
+                .format(self.get_time_average(self.stages[stage]['wait']))
+            )
+            self.logger.info('Total stage message count: {}'.format(len(self.stages[stage]['time'])))
             self.logger.info('Total stage failed messages: {}'.format(self.stages[stage]['failed']))
+
+    def log_pipeline_statistics(self):
+        """
+        Logs statistics for pipelines
+        """
         for pipeline in self.pipelines:
-            pipeline_stages = ''
-            for stage in pipeline['stages']:
-                if pipeline_stages:
-                    pipeline_stages = '{stages} -> {stage}'.format(stages = pipeline_stages, stage = stage)
-                else:
-                    pipeline_stages = '{}'.format(stage)
-            self.logger.info('Statistics for pipeline {}:'.format(pipeline_stages))
+            self.logger.info('Statistics for pipeline {}:'.format(self.get_pipeline_stages(pipeline)))
             self.logger.info(
                 'Average pipeline total processing time: {}'
-                .format((pipeline['time'] / pipeline['count']) if pipeline['count'] else 0)
+                .format(self.get_time_average(pipeline['time']))
             )
-            self.logger.info('Total pipeline message count: {}'.format(pipeline['count']))
+            self.logger.info('Total pipeline message count: {}'.format(len(pipeline['time'])))
+
+    def log_timelines(self):
+        """
+        Logs timelines
+        """
+        self.logger.info('Total timeline statistics:')
+        self.log_timeline(self.time)
+        self.logger.info('Timeline statistics for stages:')
+        for stage in self.stages:
+            self.logger.info('Processing timeline for stage {}:'.format(stage))
+            self.log_timeline(self.stages[stage]['time'])
+            self.logger.info('Wait timeline for stage {}:'.format(stage))
+            self.log_timeline(self.stages[stage]['wait'])
+        self.logger.info('Timeline statistics for pipelines:')
+        for pipeline in self.pipelines:
+            self.logger.info('Timeline statistics for pipeline: {}'.format(self.get_pipeline_stages(pipeline)))
+            self.log_timeline(pipeline['time'])
+
+    def log_statistics(self):
+        """
+        Logs statistics using logger
+        """
+        self.log_total_statistics()
+        self.log_stages_statistics()
+        self.log_pipeline_statistics()
+        self.log_timelines()
 
     def update_message_statistics(self, message):
         """
@@ -124,36 +190,39 @@ class StatsCounter:
                 self.stages[log.stage]['failed'] += 1
                 self.failed += 1
                 return  # do not update time if message failed to process
-            
-            start_time = Timestamp.ToDatetime(log.start)
-            end_time = Timestamp.ToDatetime(log.end)
+
+            processing_time = copy.deepcopy(self.record_template)
+            processing_time['start'] = Timestamp.ToDatetime(log.start)
+            processing_time['end'] = Timestamp.ToDatetime(log.end)
             
             # msg end time = end time of last stage
-            if end_time > msg_end_time:
-                msg_end_time = end_time
+            if processing_time['end'] > msg_end_time:
+                msg_end_time = processing_time['end']
             
             # stage waiting time
+            wait_time = copy.deepcopy(self.record_template)
+            wait_time['end'] = processing_time['start']
             if not last_stage_end_time:
-                wait_time = (start_time - msg_start_time).total_seconds()
+                wait_time['start'] = msg_start_time
             else:
-                wait_time = (start_time - last_stage_end_time).total_seconds()
-            last_stage_end_time = end_time
+                wait_time['start'] = last_stage_end_time
+            last_stage_end_time = processing_time['end']
             
             # add stage statistics
-            stages.append({'name': log.stage, 'time': (end_time - start_time).total_seconds(), 'wait': wait_time})
+            stages.append({'name': log.stage, 'time': processing_time, 'wait': wait_time})
         
-        time = (msg_end_time - msg_start_time).total_seconds()
+        time = copy.deepcopy(self.record_template)
+        time['start'] = msg_start_time
+        time['end'] = msg_end_time
         
         # update global statistics
         for stage in stages:
             if stage['name'] not in self.stages:
                 self.stages[stage['name']] = copy.deepcopy(self.stage_template)
-            self.stages[stage['name']]['time'] += stage['time']
-            self.stages[stage['name']]['count'] += 1
-            self.stages[stage['name']]['wait'] += stage['wait']
+            self.stages[stage['name']]['time'].append(stage['time'])
+            self.stages[stage['name']]['wait'].append(stage['wait'])
         
-        self.time += time
-        self.count += 1
+        self.time.append(time)
 
         # update pipeline statistics
         for pipeline in self.pipelines:
@@ -166,13 +235,11 @@ class StatsCounter:
                     break
             if not match:
                 continue
-            pipeline['time'] += time
-            pipeline['count'] += 1
+            pipeline['time'].append(time)
             return
         
         pipeline = copy.deepcopy(self.pipeline_template)
-        pipeline['time'] += time
-        pipeline['count'] += 1
+        pipeline['time'].append(time)
         pipeline['stages'] = [stage['name'] for stage in stages]
         self.pipelines.append(pipeline)
 
