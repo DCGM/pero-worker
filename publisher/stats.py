@@ -13,18 +13,6 @@ import copy
 from message_definitions.message_pb2 import ProcessingRequest, StageLog, Data
 from google.protobuf.timestamp_pb2 import Timestamp
 
-# setup logging (required by kazoo)
-log_formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
-
-stderr_handler = logging.StreamHandler()
-stderr_handler.setFormatter(log_formatter)
-
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-# TODO - remove debug level
-logger.setLevel(logging.DEBUG)
-logger.addHandler(stderr_handler)
-
 def dir_path(path):
     """
     Check if path is directory path
@@ -45,6 +33,12 @@ def parse_args():
         help='Directory with processing results',
         required=True,
         type=dir_path
+    )
+    parser.add_argument(
+        '-r', '--raw',
+        help='Print raw data, do not print time and loglevel of message.',
+        action='store_true',
+        default=False
     )
     return parser.parse_args()
 
@@ -99,9 +93,9 @@ class StatsCounter:
         """
         timeline.sort(key=lambda item: item['start'])
         for record in timeline:
-            self.logger.info('{start}, {end}, {duration}'.format(
-                start = record['start'],
-                end = record['end'],
+            self.logger.info('{start} {end} {duration}'.format(
+                start = record['start'].isoformat(),
+                end = record['end'].isoformat(),
                 duration = (record['end'] - record['start']).total_seconds()
             ))
     
@@ -246,6 +240,18 @@ class StatsCounter:
 def main():
     args = parse_args()
 
+    # setup logging
+    log_formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
+    if args.raw:
+        log_formatter = logging.Formatter('%(message)s')
+
+    stderr_handler = logging.StreamHandler()
+    stderr_handler.setFormatter(log_formatter)
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.INFO)
+    logger.addHandler(stderr_handler)
+
+    # get stats
     stats_counter = StatsCounter(logger=logger)
     messages = os.listdir(args.directory)
     for message in messages:
