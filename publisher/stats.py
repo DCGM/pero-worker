@@ -40,6 +40,12 @@ def parse_args():
         action='store_true',
         default=False
     )
+    parser.add_argument(
+        '-s', '--short',
+        help='Excludes timelines from output and prints only average stats.',
+        action='store_true',
+        default=False
+    )
     return parser.parse_args()
 
 class StatsCounter:
@@ -114,7 +120,6 @@ class StatsCounter:
         """
         Logs statistics for stages
         """
-        self.log_total_statistics()
         for stage in self.stages:
             self.logger.info('Statistics for stage {}:'.format(stage))
             self.logger.info(
@@ -157,14 +162,16 @@ class StatsCounter:
             self.logger.info('Timeline statistics for pipeline: {}'.format(self.get_pipeline_stages(pipeline)))
             self.log_timeline(pipeline['time'])
 
-    def log_statistics(self):
+    def log_statistics(self, short = False):
         """
         Logs statistics using logger
+        :param short: exclude timelines from output
         """
         self.log_total_statistics()
         self.log_stages_statistics()
         self.log_pipeline_statistics()
-        self.log_timelines()
+        if not short:
+            self.log_timelines()
 
     def update_message_statistics(self, message):
         """
@@ -264,7 +271,7 @@ def main():
         stats_counter.update_message_statistics(ProcessingRequest.FromString(message_data.read()))
         message_data.close()
     
-    stats_counter.log_statistics()
+    stats_counter.log_statistics(args.short)
     return 0
 
 if __name__ == "__main__":
