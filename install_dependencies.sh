@@ -39,7 +39,7 @@ echo 'Installing dependencies via pip'
 python3 -m venv .venv
 . ./.venv/bin/activate
 pip install --upgrade pip
-pip3 install --upgrade --requirement "$python_dep"
+pip3 install --no-cache-dir --upgrade --requirement "$python_dep"
 
 rc=$?
 
