@@ -1,0 +1,4 @@
+[submodule "pero-ocr"]
+	path = pero-ocr
+	url = git@github.com:xraurp/pero-ocr.git
+    branch = worker_modifications
