@@ -958,7 +958,7 @@ class Worker(object):
         try:
             logits_out = page_layout.save_logits_bytes()
         except Exception:
-            self.logger.debug('No logits available for save!')
+            self.logger.debug('No logits available to save!')
             self.logger.debug('Received error:\n{}'.format(traceback.format_exc()))
             logits_out = None
 
