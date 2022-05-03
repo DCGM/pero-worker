@@ -14,6 +14,8 @@ import traceback  # logging
 import configparser
 import threading
 import datetime
+import zipfile
+import tarfile
 from ftplib import FTP, all_errors, error_perm
 from io import StringIO  # logging to message
 
@@ -162,7 +164,7 @@ class Worker(object):
 
         # configuration for the page parser and selected orc
         self.config = None
-        self.ocr = None
+        self.ocr_path = None
         self.page_parser = None
 
         # ftp login
@@ -594,7 +596,11 @@ class Worker(object):
         if self.mq_connection and self.mq_connection.is_open:
             if not self.mq_channel_closed(timeout=3):
                 self.logger.warning('Closing connection without channel closed!')
-            self.mq_connection.close()
+            try:
+                self.mq_connection.close()
+            except pika.exceptions.ConnectionWrongStateError:
+                # connection failed after channel was disconnected
+                pass
             self.mq_connection.ioloop.stop()
 
     def mq_connect(self):
@@ -952,6 +958,8 @@ class Worker(object):
         try:
             logits_out = page_layout.save_logits_bytes()
         except Exception:
+            self.logger.debug('No logits available for save!')
+            self.logger.debug('Received error:\n{}'.format(traceback.format_exc()))
             logits_out = None
 
         for data in processing_request.results:
@@ -971,19 +979,33 @@ class Worker(object):
             logits.name = 'page.logits'
             logits.content = logits_out
 
+    @staticmethod
+    def unpack_archive(archive, path):
+        """
+        Unpacks tar or zip archive
+        :param archive: path to archive to unpack
+        :param path: path where archive will be unpacked to
+        """
+        if tarfile.is_tarfile(archive):
+            with tarfile.open(archive, 'r') as arch:
+                arch.extractall(path)
+        else:
+            with zipfile.ZipFile(archive, 'r') as arch:
+                arch.extractall(path)
+
     def ocr_load(self, name):
         """
         Loads ocr for stage given by name
         :param name: name of config/queue of the stage
         """
         # create ocr directory
-        self.ocr = os.path.join(self.tmp_directory, name)
-        if os.path.exists(self.ocr):
-            self.clean_tmp_files(self.ocr)
-        os.mkdir(self.ocr)
+        self.ocr_path = os.path.join(self.tmp_directory, name)
+        if os.path.exists(self.ocr_path):
+            self.clean_tmp_files(self.ocr_path)
+        os.mkdir(self.ocr_path)
 
         # config
-        config_file_name = os.path.join(self.ocr, 'config.ini')
+        config_file_name = os.path.join(self.ocr_path, 'config.ini')
 
         # get config from zookeeper and save to file
         try:
@@ -991,14 +1013,34 @@ class Worker(object):
         except (kazoo.exceptions.NoNodeError, kazoo.exceptions.ZookeeperError) as e:
             self.update_status(constants.STATUS_FAILED)
             self.logger.error('Failed to get configuration for queue {}'.format(name))
-            # stop reconfiguration if config can't be downloaded
             raise
         with open(config_file_name, 'w') as config_file:
             config_file.write(config_content)
-        
+
         # load config
         self.config = configparser.ConfigParser()
         self.config.read(config_file_name)
+
+        try:
+            dummy = self.config['WORKER']['DUMMY']
+        except KeyError:
+            dummy = None
+        
+        # do not load ocr if loaded stage is dummy
+        if dummy:
+            return
+        
+        # get path of ocr data on ftp servers
+        try:
+            config_path = self.zk.get(constants.QUEUE_CONFIG_PATH_TEMPLATE.format(queue_name=name))[0].decode('utf-8')
+        except (kazoo.exceptions.NoNodeError, kazoo.exceptions.ZookeeperError) as e:
+            self.update_status(constants.STATUS_FAILED)
+            self.logger.error('Failed to get OCR data path on FTP server for queue {}'.format(name))
+            raise
+
+        # no additional files required
+        if not config_path:
+            return
 
         # connect to ftp servers
         try:
@@ -1011,51 +1053,36 @@ class Worker(object):
             raise
 
         # get ocr data
-        for section in self.config:
-            for key in self.config[section]:
-                try:
-                    value = json.loads(self.config[section][key])
-                    self.logger.debug('Successfully parsed config field: {section}:{key}:{value}'.format(
-                        section = section,
-                        key = key,
-                        value = self.config[section][key]
-                    ))
-                except json.decoder.JSONDecodeError:
-                    # not a valid json
-                    self.logger.debug('Failed to parse config field: {section}:{key}:{value}'.format(
-                        section = section,
-                        key = key,
-                        value = self.config[section][key]
-                    ))
-                else:
-                    if isinstance(value, dict):
-                        if 'url' in value and 'path' in value:
-                            try:
-                                with open(os.path.join(self.ocr, value['path']), 'wb') as fd:
-                                    self.ftp.retrbinary('RETR {}'.format(value['url']), fd.write)
-                            except (PermissionError, all_errors) as e:
-                                self.logger.error('Failed to retreive file {url} and save it to {path}!'.format(
-                                    path = value['path'],
-                                    url = value['url']
-                                ))
-                                # stop configuration
-                                self.ftp_disconnect()
-                                raise
-                            else:
-                                self.logger.debug('File {url} saved to {path}'.format(
-                                    url = value['url'],
-                                    path = value['path']
-                                ))
-                                # set path to file
-                                self.config[section][key] = value['path']
+        archive_name = '{}.archive'.format(self.queue)
+        archive_path = os.path.join(self.tmp_directory, archive_name)
+        try:
+            with open(archive_path, 'wb') as fd:
+                self.ftp.retrbinary('Retr {}'.format(config_path), fd.write)
+        except Exception:
+            self.logger.error('Failed to retreive file {remote_path} and sage it to {path}!'.format(
+                remote_path = config_path,
+                path = archive_name
+            ))
+            raise
+        else:
+            self.logger.debug('File {remote_path} successfully saved as {path}!'.format(
+                remote_path = config_path,
+                path = archive_name
+            ))
+        try:
+            self.unpack_archive(archive_path, self.ocr_path)
+        except Exception:
+            self.logger.error('Failed to unpack OCR data for queue {queue}!'.format(self.queue))
+            raise
+        else:
+            self.logger.debug('OCR data unpacked successfully!')
+            # remove unneeded archive to save space
+            self.clean_tmp_files(archive_path)
+        
         self.ftp_disconnect()
 
         # load ocr for page processing
-        try:
-            dummy = self.config['WORKER']['DUMMY']
-        except KeyError:
-            dummy = None
-            self.page_parser = PageParser(self.config, self.ocr)
+        self.page_parser = PageParser(self.config, self.ocr_path)
     
     def stop_processing(self):
         """
@@ -1166,6 +1193,7 @@ class Worker(object):
         except KeyboardInterrupt:
             # TODO - debug keyboard interrupt - sometimes does not stop the ioloop
             self.logger.info('Keyboard interrupt received! Shutting down!')
+            self.enabled = False
             self.mq_disconnect()
             self.update_status(constants.STATUS_DEAD)
         except Exception:

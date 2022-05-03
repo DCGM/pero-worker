@@ -94,6 +94,10 @@ def parse_args():
         type=argparse.FileType('r')
     )
     parser.add_argument(
+        '-r', '--remote-path',
+        help='Path to remote OCR config file on FTP server.'
+    )
+    parser.add_argument(
         '-n', '--name',
         help='Name for identification of queue and configuration files.'
     )
@@ -280,6 +284,7 @@ def main():
             # upload configuration
             if args.config:
                 zk.ensure_path(constants.QUEUE_CONFIG_TEMPLATE.format(queue_name = args.name))
+                zk.ensure_path(constants.QUEUE_CONFIG_PATH_TEMPLATE.format(queue_name = args.name))
                 zk.set(constants.QUEUE_CONFIG_TEMPLATE.format(queue_name = args.name), args.config.read().encode('utf-8'))
                 zk.ensure_path(constants.QUEUE_STATS_AVG_MSG_TIME_TEMPLATE.format(queue_name = args.name))
                 zk.ensure_path(constants.QUEUE_STATS_WAITING_SINCE_TEMPLATE.format(queue_name = args.name))
@@ -292,7 +297,15 @@ def main():
                         path=constants.QUEUE_CONFIG_ADMINISTRATIVE_PRIORITY_TEMPLATE.format(queue_name = args.name),
                         value=int.to_bytes(0, sys.getsizeof(0), constants.ZK_INT_BYTEORDER)
                     )
-                logger.info('Configuration file uploaded successfully!')
+                logger.info('Configuration uploaded successfully!')
+            
+            if args.remote_path:
+                logger.info('Setting remote config path to {}'.format(args.remote_path))
+                zk.ensure_path(constants.QUEUE_CONFIG_PATH_TEMPLATE.format(queue_name = args.name))
+                zk.set(
+                    path=constants.QUEUE_CONFIG_PATH_TEMPLATE.format(queue_name = args.name),
+                    value=args.remote_path.encode('utf-8')
+                )
             
             if isinstance(args.administrative_priority, int):
                 logger.info(
@@ -338,7 +351,7 @@ def main():
             if not args.keep_config:
                 if zk.exists(constants.QUEUE_TEMPLATE.format(queue_name = args.name)):
                     zk.delete(constants.QUEUE_TEMPLATE.format(queue_name = args.name))
-                    logger.info('Configuration file deleted successfully!')
+                    logger.info('Configuration deleted successfully!')
             
             # delete queue
             try:
