@@ -24,6 +24,13 @@ Source created virtual environment:
 . ./.venv/bin/activate
 ```
 
+Download pero-ocr to `pero-ocr/` folder:
+```
+git submodule init
+git submodule update
+```
+Or do this manually by clonning pero-ocr from https://github.com/DCGM/pero-ocr.git
+
 Starting required services:
 ```
 docker run -d --rm -p2181:2181 --name="zookeeper" zookeeper
@@ -64,7 +71,7 @@ python worker/worker.py -z 127.0.0.1
 python worker/worker_watchdog.py -z 127.0.0.1
 ```
 
-## processing
+## Processing
 
 Uploading images for processing:
 ```
@@ -76,3 +83,31 @@ Downloading results:
 python scripts/publisher.py --directory output/directory/path --download out
 ```
 If you want to keep downloading images from ```out``` stage, add ```--keep-running``` argument at the end of the command above.
+
+
+## Additional info
+
+System was tested with these versions of libraries:
+```
+kazoo==2.8.0
+pika==1.2.0
+protobuf==3.19.4
+python-magic==0.4.25
+requests==2.27.1
+numpy==1.21.5
+opencv-python==4.5.5.62
+lxml==4.7.1
+scipy==1.7.3
+numba==0.55.1
+torch==1.10.2
+torchvision==0.11.3
+brnolm==0.2.0
+scikit-learn==1.0.2
+scikit-image==0.19.1
+tensorflow-gpu==2.8.0
+shapely==1.8.0
+pyamg==4.2.1
+imgaug==0.4.0
+arabic_reshaper==2.1.3
+```
+But it should work with latest versions as well.
