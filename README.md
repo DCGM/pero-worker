@@ -14,6 +14,8 @@ Processing system uses 5 components.
 Docker is used in this example. Please visit https://docs.docker.com/engine/install/ and folow instructions for your operating system.
 Use installation instruction for Apache zookeeper, RabbitMQ and your favourite FTP server, if you don't want to use docker.
 
+Installation script was tested under Debian 11 and is APT dependent.
+
 Installing requirements and create python venv for the project:
 ```
 sh install_dependencies.sh
@@ -110,4 +112,4 @@ pyamg==4.2.1
 imgaug==0.4.0
 arabic_reshaper==2.1.3
 ```
-But it should work with latest versions as well.
+Python version used during development was `Python 3.9.2` but it should work with latest versions of python and libraries as well.
