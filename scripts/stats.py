@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-# Collects and calculates statistics from worker trafic
+# Collects and calculates statistics from worker traffic
 
 import argparse
 import os
@@ -27,7 +27,7 @@ def dir_path(path):
     return path
 
 def parse_args():
-    parser = argparse.ArgumentParser('Calculate worker trafic statistics')
+    parser = argparse.ArgumentParser('Calculate worker traffic statistics')
     parser.add_argument(
         '-d', '--directory',
         help='Directory with processing results',

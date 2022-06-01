@@ -11,7 +11,7 @@ Processing system uses 5 components.
 
 ## setup
 
-Docker is used in this example. Please visit https://docs.docker.com/engine/install/ and folow instructions for your operating system.
+Docker is used in this example. Please visit https://docs.docker.com/engine/install/ and follow instructions for your operating system.
 Use installation instruction for Apache zookeeper, RabbitMQ and your favourite FTP server, if you don't want to use docker.
 
 Installation script was tested under Debian 11 and is APT dependent.
@@ -31,7 +31,7 @@ Download pero-ocr to `pero-ocr/` folder:
 git submodule init
 git submodule update
 ```
-Or do this manually by clonning pero-ocr from https://github.com/DCGM/pero-ocr.git
+Or do this manually by cloning pero-ocr from https://github.com/DCGM/pero-ocr.git
 
 Starting required services:
 ```
@@ -53,9 +53,9 @@ python scripts/config_manager.py -z 127.0.0.1 -s 127.0.0.1 --ftp-servers 127.0.0
 
 Create processing stages for OCR pipeline:
 ```
-python scripts/config_manager.py --name ocr_stage_x --config path/to/ocr_stage_x/config.ini --remote-path path/to/aditional/data/on/ftp/server.tar.xz
+python scripts/config_manager.py --name ocr_stage_x --config path/to/ocr_stage_x/config.ini --remote-path path/to/additional/data/on/ftp/server.tar.xz
 ```
-Please note that you must upload aditional files to FTP server manually. Command above specifies just path used by worker to download these files from the server. To upload files use your favourite FTP client.
+Please note that you must upload additional files to FTP server manually. Command above specifies just path used by worker to download these files from the server. To upload files use your favourite FTP client.
 
 For more details on configurations please visit pero-ocr git (https://github.com/DCGM/pero-ocr) and webpage (https://pero.fit.vutbr.cz/) to get more information.
 

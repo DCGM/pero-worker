@@ -55,7 +55,7 @@ def parse_args():
     )
     parser.add_argument(
         '--switch', '-i',
-        help='Switch worker to diferent queue. Specify worker id and target queue',
+        help='Switch worker to different queue. Specify worker id and target queue',
         nargs=2
     )
     parser.add_argument(
@@ -189,7 +189,7 @@ def main():
     if args.queues:
         raise NotImplemented("Printing queue statistics is not supported yet!")
 
-    # switch worker to diferent queue
+    # switch worker to different queue
     if args.switch:
         try:
             switch_worker(zk, args.switch[0], args.switch[1])
