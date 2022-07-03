@@ -4,6 +4,7 @@ pika
 protobuf
 python-magic
 requests
+paramiko
 
 # pero OCR dependencies
 numpy
