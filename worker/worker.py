@@ -16,7 +16,6 @@ import threading
 import datetime
 import zipfile
 import tarfile
-from ftplib import FTP, all_errors, error_perm
 from io import StringIO  # logging to message
 
 # dummy processing
@@ -45,6 +44,7 @@ import kazoo.exceptions
 # constants
 import worker_functions.constants as constants
 import worker_functions.connection_aux_functions as cf
+from worker_functions.sftp_client import SFTP_Client
 
 
 # === Global config ===
@@ -175,7 +175,6 @@ class Worker(object):
         self.mq_channel = None
         self.mq_connection = None
         self.zk = None
-        self.ftp = None
 
         # selected broker server
         self.mq_server = None
@@ -239,40 +238,19 @@ class Worker(object):
         self.logger.info('Closing connection and cleaning up')
         #self.update_status(constants.STATUS_DEAD)
         self.mq_disconnect()
-        self.ftp_disconnect()
         self.zk_disconnect()
         self.clean_tmp_files()
         self.logger.debug('Cleanup complete!')
     
-    def ftp_connect(self):
+    def sftp_connect(self):
         """
-        Connects to ftp
+        Creates new SFTP connection
         """
         self.ftp_servers_lock.acquire()
-        self.ftp = cf.ftp_connect(self.ftp_servers, self.logger)
+        sftp = SFTP_Client(self.ftp_servers, self.user, self.password, self.logger)
         self.ftp_servers_lock.release()
-        if not self.ftp:
-            raise ConnectionError('Failed to connect to ftp servers!')
-        self.ftp.login(self.user, self.password)
-    
-    def ftp_disconnect(self):
-        """
-        Disconnects from ftp
-        """
-        if self.ftp:
-            try:
-                self.ftp.quit()
-            except AttributeError:
-                # connection is already closed
-                pass
-            except Exception:
-                # failed to disconnect the polite way
-                # close the connection (the ugly way)
-                try:
-                    self.ftp.close()
-                except Exception:
-                    self.logger.error('Error occured during disconnecting from FTP!')
-                    self.logger.error('{}'.format(traceback.format_exc()))
+        sftp.sftp_connect()
+        return sftp
     
     def zk_disconnect(self):
         """
@@ -1043,21 +1021,13 @@ class Worker(object):
             return
 
         # connect to ftp servers
-        try:
-            self.ftp_connect()
-        except error_perm:
-            self.logger.critical('Wrong FTP server password!')
-            raise
-        except Exception:
-            self.logger.critical('Failed to connect to ftp servers!')
-            raise
+        sftp = self.sftp_connect()
 
         # get ocr data
         archive_name = '{}.archive'.format(self.queue)
         archive_path = os.path.join(self.tmp_directory, archive_name)
         try:
-            with open(archive_path, 'wb') as fd:
-                self.ftp.retrbinary('Retr {}'.format(config_path), fd.write)
+            sftp.sftp_get(f'{config_path}', archive_path)
         except Exception:
             self.logger.error('Failed to retreive file {remote_path} and sage it to {path}!'.format(
                 remote_path = config_path,
@@ -1079,7 +1049,7 @@ class Worker(object):
             # remove unneeded archive to save space
             self.clean_tmp_files(archive_path)
         
-        self.ftp_disconnect()
+        sftp.sftp_disconnect()
 
         # load ocr for page processing
         self.page_parser = PageParser(self.config, self.ocr_path)

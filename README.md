@@ -7,12 +7,12 @@ Processing system uses 5 components.
 - Watchdog for task planing and scheduling
 - RabbitMQ message broker for task distribution
 - Zookeeper for coordination of the workers and storing the configuration
-- FTP for storing OCR binary files.
+- SFTP for storing OCR binary files.
 
 ## setup
 
 Docker is used in this example. Please visit https://docs.docker.com/engine/install/ and folow instructions for your operating system.
-Use installation instruction for Apache zookeeper, RabbitMQ and your favourite FTP server, if you don't want to use docker.
+Use installation instruction for Apache zookeeper, RabbitMQ and your favourite SFTP server, if you don't want to use docker.
 
 Installation script was tested under Debian 11 and is APT dependent.
 
@@ -41,7 +41,7 @@ docker run -d --rm -p2181:2181 --name="zookeeper" zookeeper
 docker run -d --rm --name rabbitmq -p 5672:5672 -p 15672:15672 rabbitmq:management
 ```
 ```
-docker run --name ftp --detach --env FTP_USER=pero --env FTP_PASS=pero --network bridge --publish 20-21:20-21/tcp --publish 40000-40009:40000-40009/tcp --volume /home/$USER/ftp:/home/pero garethflowers/ftp-server
+ docker run --rm -d -p 2222:22 -v /home/$USER/ftp:/home/pero/ --name sftp atmoz/sftp:alpine pero:pero:1000
 ```
 
 ## Initial system configuration
@@ -55,7 +55,7 @@ Create processing stages for OCR pipeline:
 ```
 python scripts/config_manager.py --name ocr_stage_x --config path/to/ocr_stage_x/config.ini --remote-path path/to/aditional/data/on/ftp/server.tar.xz
 ```
-Please note that you must upload aditional files to FTP server manually. Command above specifies just path used by worker to download these files from the server. To upload files use your favourite FTP client.
+Please note that you must upload aditional files to SFTP server manually. Command above specifies just path used by worker to download these files from the server. To upload files use your favourite SFTP client.
 
 For more details on configurations please visit pero-ocr git (https://github.com/DCGM/pero-ocr) and webpage (https://pero.fit.vutbr.cz/) to get more information.
 
