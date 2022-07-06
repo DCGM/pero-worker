@@ -33,22 +33,24 @@ git submodule update
 ```
 Or do this manually by clonning pero-ocr from https://github.com/DCGM/pero-ocr.git
 
-Starting required services:
+Starting required services.
+Mounted paths are required for data persistency.
+Service can recover this data after restart, so it does not have to be set up again from scratch.
 ```
-docker run -d --rm -p2181:2181 --name="zookeeper" zookeeper
+docker run -d --rm -p2181:2181 -v /home/"$USER"/zookeeper-data:/data -v /home/"$USER"/zookeeper-datalog:/datalog --name="zookeeper" zookeeper
 ```
 ```
-docker run -d --rm --name rabbitmq -p 5672:5672 -p 15672:15672 rabbitmq:management
+docker run -d --rm --name rabbitmq --hostname "$(hostname)" -v /home/"$USER"/rabbitmq:/var/lib/rabbitmq -p 5672:5672 -p 15672:15672 rabbitmq:management
 ```
 ```
- docker run --rm -d -p 2222:22 -v /home/$USER/ftp:/home/pero/ --name sftp atmoz/sftp:alpine pero:pero:1000
+ docker run --rm -d -p 2222:22 -v /home/"$USER"/ftp:/home/pero/ --name sftp atmoz/sftp:alpine pero:pero
 ```
 
 ## Initial system configuration
 
 Set default server addresses and ports for auto-configuration:
 ```
-python scripts/config_manager.py -z 127.0.0.1 -s 127.0.0.1 --ftp-servers 127.0.0.1 --update-mq-servers --update-ftp-servers --update-monitoring-servers
+python scripts/config_manager.py -z 127.0.0.1 -s 127.0.0.1 --ftp-servers 127.0.0.1:2222 --update-mq-servers --update-ftp-servers --update-monitoring-servers
 ```
 
 Create processing stages for OCR pipeline:
