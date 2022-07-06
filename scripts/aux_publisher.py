@@ -81,7 +81,7 @@ def consume(channel, method, properties, body):
         print(f' {i} : {result.name}')
         with open(os.path.join(output, result.name), 'wb') as file:
             file.write(result.content)
-    print(f'Stage logs avaliable for:')
+    print(f'Stage logs available for:')
     for i, log in enumerate(message.logs):
         print(f' {i} : {log.stage}')
         with open(os.path.join(output, log.stage), 'w') as file:
