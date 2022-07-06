@@ -11,7 +11,7 @@ WORKER_STATUS_ID_TEMPLATE = WORKER_STATUS + '/{worker_id}'
 WORKER_STATUS_TEMPLATE = WORKER_STATUS_ID_TEMPLATE + '/status'  # current worker status
 WORKER_QUEUE_TEMPLATE = WORKER_STATUS_ID_TEMPLATE + '/queue'  # input queue
 WORKER_ENABLED_TEMPLATE = WORKER_STATUS_ID_TEMPLATE + '/enabled'  # worker enabled
-WORKER_UNLOCK_TIME = WORKER_STATUS_ID_TEMPLATE + '/unlock_time'  # time after which it is posible to switch worker to another queue
+WORKER_UNLOCK_TIME = WORKER_STATUS_ID_TEMPLATE + '/unlock_time'  # time after which it is possible to switch worker to another queue
 
 WORKER_CONFIG = PERO_PATH + '/worker/config'  # configs for all workers
 WORKER_CONFIG_MQ_SERVERS = WORKER_CONFIG + '/mq_servers'

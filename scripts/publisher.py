@@ -11,7 +11,7 @@ import uuid
 import datetime
 from stats import StatsCounter
 
-# connection auxiliary formating functions
+# connection auxiliary formatting functions
 import worker_functions.connection_aux_functions as cf
 from worker_functions.mq_client import MQClient
 
@@ -231,7 +231,7 @@ class Publisher(MQClient):
 
     def mq_get_results_continuous(self, queue, directory):
         """
-        Recives result messages from queue and stores them to directory.
+        Receives result messages from queue and stores them to directory.
         Keeps running and waiting for messages.
         :param queue: queue to download results from
         :param directory: directory where to store downloaded data

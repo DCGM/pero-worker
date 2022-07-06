@@ -783,7 +783,7 @@ class Worker(object):
             self.message_logger.removeHandler(buffer_handler)
 
             # send request to output queue and
-            # acknowledge the request after successfull processing
+            # acknowledge the request after successful processing
             while True:
                 try:
                     channel.basic_publish('', next_stage, processing_request.SerializeToString(),
@@ -861,7 +861,7 @@ class Worker(object):
             except KeyError:
                 processing_time_diff_min = processing_time_diff_max = 0
         except (TypeError, ValueError):
-            error_msg = 'Wrong dummy config time fromat for processing stage {}, value must be number!'.format(log.stage)
+            error_msg = 'Wrong dummy config time format for processing stage {}, value must be number!'.format(log.stage)
             self.logger.error(error_msg)
             self.message_logger.error(error_msg)
             raise
@@ -871,7 +871,7 @@ class Worker(object):
             processing_time_diff_max = time_delta
         
         if processing_time_diff_min > processing_time_diff_max:
-            error_msg = 'Wrong dummy config for processing stage {}, mimimal processing time cannot be higher than maximal processing time!'.format(log.stage)
+            error_msg = 'Wrong dummy config for processing stage {}, minimal processing time cannot be higher than maximal processing time!'.format(log.stage)
             self.logger.error(error_msg)
             self.message_logger.error(error_msg)
             raise
@@ -1029,7 +1029,7 @@ class Worker(object):
         try:
             sftp.sftp_get(f'{config_path}', archive_path)
         except Exception:
-            self.logger.error('Failed to retreive file {remote_path} and sage it to {path}!'.format(
+            self.logger.error('Failed to retrieve file {remote_path} and sage it to {path}!'.format(
                 remote_path = config_path,
                 path = archive_name
             ))
@@ -1159,7 +1159,7 @@ class Worker(object):
         try:
             # uses this thread for managing the MQ connection
             # until the connection is closed
-            self.mq_connection.ioloop.start()  # TODO - run connection in diferent thread
+            self.mq_connection.ioloop.start()  # TODO - run connection in different thread
         except KeyboardInterrupt:
             # TODO - debug keyboard interrupt - sometimes does not stop the ioloop
             self.logger.info('Keyboard interrupt received! Shutting down!')

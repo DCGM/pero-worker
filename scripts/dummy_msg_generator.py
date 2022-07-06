@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-# generates dummy trafic for testing
+# generates dummy traffic for testing
 
 import sys
 import os
@@ -12,7 +12,7 @@ import random
 import datetime
 import time
 
-# connection auxiliary formating functions
+# connection auxiliary formatting functions
 import worker_functions.connection_aux_functions as cf
 
 from publisher import zk_get_mq_servers
@@ -220,7 +220,7 @@ def main():
     except KeyboardInterrupt:
         logger.info('Keyboard interrupt received! Exiting!')
     except Exception:
-        logger.error('Failed to generate trafic!')
+        logger.error('Failed to generate traffic!')
         logger.error('Received error:\n{}'.format(traceback.format_exc()))
         return 1
 

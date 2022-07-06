@@ -105,7 +105,7 @@ class WorkerWatchdog(ZkClient):
         Calculates queue priority based on its parameters
         :param length: queue length / number of messages in the queue
         :param avg_message_time: average time needed to process one message from this queue
-        :param waiting_time: time how long messages are waiting (calcualted from time when oldest message was added to queue)
+        :param waiting_time: time how long messages are waiting (calculated from time when oldest message was added to queue)
         :param n_workers: number of workers processing the queue
         :param administrative_priority: priority given by administrator to prioritize queue (default = 0, processing disabled = -1)
         :return: queue priority
@@ -256,10 +256,10 @@ class WorkerWatchdog(ZkClient):
                 try:
                     waiting_time = (self.last_sample_time - datetime.datetime.fromisoformat(queue_zk_stats[queue['name']]['waiting_since'])).total_seconds()
                 except Exception:
-                    self.logger.warning('Failed to parse waiting time of queue {}, schduling might not be accurate!'.format(queue['name']))
+                    self.logger.warning('Failed to parse waiting time of queue {}, scheduling might not be accurate!'.format(queue['name']))
                     waiting_time = 0
 
-            # calcuate priority for the queue
+            # calculate priority for the queue
             queue_priorities[queue['name']] = self.get_queue_parametric_priority(
                 length=queue['messages'],
                 avg_message_time=queue_zk_stats[queue['name']]['avg_msg_time'],
@@ -285,7 +285,7 @@ class WorkerWatchdog(ZkClient):
     
     def get_worker_stats(self):
         """
-        Get worker statistics and informations from zookeeper
+        Get worker statistics and information from zookeeper
         :return: dictionary with worker data
         :raise: ZookeeperError if zookeeper connection/communication fails
         """
@@ -308,7 +308,7 @@ class WorkerWatchdog(ZkClient):
                     worker_id = worker))[0].decode('utf-8')
             except kazoo.exceptions.NoNodeError:
                 self.logger.warning(
-                    'Worker {} does not have status field defind in zookeeper!'
+                    'Worker {} does not have status field defined in zookeeper!'
                     .format(worker)
                 )
                 continue
@@ -513,7 +513,7 @@ class WorkerWatchdog(ZkClient):
                 self.logger.debug('New queue priorities:\n{}'.format(json.dumps(queue_priorities, indent=4)))
         else:
             # switch worker from queue witch last priority that is being processed
-            # to queue with highes priority (only one worker at the time)
+            # to queue with highest priority (only one worker at the time)
             self.logger.debug('Switching worker from less prioritized queue')
             worker_switched = False
             queue_priorities_reverse = dict(sorted(queue_priorities.items(), key=lambda item: item[1]))
