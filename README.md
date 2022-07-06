@@ -57,7 +57,7 @@ Create processing stages for OCR pipeline:
 ```
 python scripts/config_manager.py --name ocr_stage_x --config path/to/ocr_stage_x/config.ini --remote-path path/to/additional/data/on/ftp/server.tar.xz
 ```
-Please note that you must upload additional files to FTP server manually. Command above specifies just path used by worker to download these files from the server. To upload files use your favourite SFTP client.
+Please note that you must upload additional files to SFTP server manually. Command above specifies just path used by worker to download these files from the server. To upload files use your favourite SFTP client.
 
 For more details on configurations please visit pero-ocr git (https://github.com/DCGM/pero-ocr) and webpage (https://pero.fit.vutbr.cz/) to get more information.
 
