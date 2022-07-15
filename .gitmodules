@@ -1,4 +1,4 @@
 [submodule "pero-ocr"]
 	path = pero-ocr
 	url = https://github.com/xraurp/pero-ocr.git
-	branch = worker_modifications
+	branch = logits_buffers
