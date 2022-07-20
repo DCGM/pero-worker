@@ -12,7 +12,7 @@ class SFTP_Client:
     SFTP Client
     """
 
-    def __init__(self, sftp_servers = [], username = '', password = '', logger = logging.getLogger(__name__)):
+    def __init__(self, sftp_servers = [], username = 'pero', password = 'pero', logger = logging.getLogger(__name__)):
         self.sftp_servers = sftp_servers
         self.logger = logger
 
