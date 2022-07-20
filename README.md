@@ -139,6 +139,8 @@ Or do this manually by cloning pero-ocr from https://github.com/DCGM/pero-ocr.gi
     Then to to tab users and add new users with permissions you want (in this example it would be `pero:pero`).
     If added user is not administrator, make sure it have access (`tags`) to `monitoring` and `management` as these are needed by worker and watchdog to work correctly.
 
+    Worker uses `/pero` vhost, that have to be added as well. `pero` user must have permissions to access this vhost.
+
     In production environment it is also good idea to change password of the default user `guest` or even better, add another admin account and then delete `guest` entirely.
 
 - Zookeeper - user have to be added before server is started.
@@ -172,7 +174,8 @@ Or do this manually by cloning pero-ocr from https://github.com/DCGM/pero-ocr.gi
     ```
 
 ### Example configs
-Configuration for RabbitMQ and Zookeeper are avaliable in subfolders `zookeeper` and `rabbitmq`. SFTP server users are configured via docker container parameter.
+Configuration examples for RabbitMQ and Zookeeper are avaliable in subfolder `sample-config`.
+SFTP server users are configured via docker container parameter.
 Worker, watchdog and all tools supports `--user` and `--password` options.
 
 ### Additional info on SSL/TLS and authentication
