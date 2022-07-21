@@ -198,12 +198,12 @@ docker run  -d --rm -p 2181:2181 \
             -v /home/"$USER"/zookeeper-config/zk_truststore.jks:/conf/zk_truststore.jks \
             -v /home/"$USER"/zookeeper-config/zk_keystore.jks:/conf/zk_keystore.jks \
             -v /home/"$USER"/zookeeper-config/java.env:/conf/java.env \
-            -v /home/"$USER"/zookeeper-config/auth.conf:/conf/auth.conf \ 
+            -v /home/"$USER"/zookeeper-config/auth.conf:/conf/auth.conf \
             --name="zookeeper" zookeeper
 ```
 ```
 docker run  -d --rm -p 5672:5672 -p 15672:15672 \
-            -v /home/"$USER"/rabbitmq:/var/lib/rabbitmq \
+            -v /home/"$USER"/rabbitmq-data:/var/lib/rabbitmq \
             -v /home/"$USER"/rabbit-config/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf \
             -v /home/"$USER"/rabbit-config/certs:/etc/rabbitmq/certs \
             --hostname "$(hostname)" \

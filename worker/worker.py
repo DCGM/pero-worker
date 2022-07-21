@@ -3,6 +3,7 @@
 # Worker for page processing
 
 import pika  # AMQP protocol library for queues
+import ssl
 import logging
 import time
 import sys
@@ -1230,8 +1231,9 @@ def main():
     tmp_dir = args.tmp_directory if args.tmp_directory else None
 
     worker = Worker(
-        user=args.user,
+        username=args.username,
         password=args.password,
+        ca_cert=args.ca_cert,
         zookeeper_servers=zk_servers,
         mq_servers=mq_servers,
         ftp_servers=ftp_servers,

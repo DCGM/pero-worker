@@ -361,7 +361,7 @@ class ZkPublisher(ZkClient):
     Client for obtaining configuration from zookeeper
     """
 
-    def zk_get_mq_servers(zookeeper_servers):
+    def zk_get_mq_servers(self, zookeeper_servers):
         """
         Get list of mq servers from zookeeper
         :param zookeeper_servers: list of zookeeper servers

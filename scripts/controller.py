@@ -95,7 +95,7 @@ class Controller(ZkClient):
     Controller for workers and watchdog.
     """
 
-    def get_worker_status():
+    def get_worker_status(self):
         """
         Logs status of the workers.
         :raise: ZookeeperError if server returns non-zero error code
@@ -119,7 +119,7 @@ class Controller(ZkClient):
         except NoNodeError:
             self.logger.info('No workers are connected')
 
-    def switch_worker(worker, queue):
+    def switch_worker(self, worker, queue):
         """
         Switch given worker to given queue.
         :param zk: zookeeper connection
@@ -142,7 +142,7 @@ class Controller(ZkClient):
 
         self.zk.set(constants.WORKER_QUEUE_TEMPLATE.format(worker_id = worker), queue.encode('utf-8'))
 
-    def shutdown_worker(worker):
+    def shutdown_worker(self, worker):
         """
         Shutdown given worker.
         :param zk: zookeeper connection
@@ -161,7 +161,7 @@ class Controller(ZkClient):
         
         self.zk.set(constants.WORKER_ENABLED_TEMPLATE.format(worker_id = worker), 'false'.encode('utf-8'))
 
-    def remove_worker(worker):
+    def remove_worker(self, worker):
         """
         Removes worker record from zookeeper.
         :param zk: zookeeper connection
@@ -200,7 +200,7 @@ def main():
     # get worker status
     if args.status:
         try:
-            controller.get_worker_status(zk)
+            controller.get_worker_status()
         except ZookeeperError as e:
             self.logger.error('Failed to get status of the workers!')
             self.logger.error('Received error message: {}'.format(e))

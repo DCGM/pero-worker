@@ -80,6 +80,7 @@ def parse_args():
 class WorkerWatchdog(ZkClient):
 
     queue_request = 'http://{server}/api/queues'
+    queue_request_ssl = 'https://{server}/api/queues'
     minimal_message_number = 10  # minimal number of messages to process before worker can be switched
     minimal_reconfiguration_time = 10  # time needed for worker to switch queue + time needed to apply configuration changes by watchdog
 
@@ -92,6 +93,9 @@ class WorkerWatchdog(ZkClient):
             ca_cert=ca_cert,
             logger=logger
         )
+        # credentials to use with management console requests
+        self.username = username
+        self.password = password
 
         # last time when statistics were downloaded - type datetime.datetime()
         self.last_sample_time = None
@@ -198,19 +202,23 @@ class WorkerWatchdog(ZkClient):
         """
         # check queue status using http api
         response = None
+        if self.ca_cert:
+            queue_request = self.queue_request_ssl
+        else:
+            queue_request = self.queue_request
         self.mq_servers_lock.acquire()
         try:
             for server in self.mq_servers_monitoring:
                 try:
                     response = requests.get(
-                        self.queue_request.format(server = cf.ip_port_to_string(server)),
+                        queue_request.format(server = cf.ip_port_to_string(server)),
                         auth=(self.username, self.password),
                         verify=self.ca_cert
                     )
                 except requests.exceptions.RequestException:
                     self.logger.error(
                         'Failed to connect to broker monitoring api on server {}'
-                        .format(cf.ip_port_to_string(record))
+                        .format(cf.ip_port_to_string(server))
                     )
                     self.logger.error('Received error:\n{}'.format(traceback.format_exc()))
                 else:

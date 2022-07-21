@@ -201,7 +201,7 @@ class ZkConfigManager(ZkClient):
         :return: list of MQ servers
         """
         try:
-            server_list = cf.server_list(zk.get_children(path))
+            server_list = cf.server_list(self.zk.get_children(path))
         except kazoo.exceptions.NoNodeError:
             self.logger.error('Failed to obtain server list from zookeeper!')
             raise
