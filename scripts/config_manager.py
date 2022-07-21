@@ -82,17 +82,17 @@ def parse_args():
     )
     parser.add_argument(
         '-u', '--username',
-        help='Username for server login.',
+        help='Username for authentication on server.',
         default=None
     )
     parser.add_argument(
         '-p', '--password',
-        help='Users password.',
+        help='Password for user authentication.',
         default=None
     )
     parser.add_argument(
-        '--ca-cert',
-        help='CA certificate for validation of server certificates during ssl/tls handshake.',
+        '-e', '--ca-cert',
+        help='CA Certificate for SSL/TLS connection verification.',
         default=None
     )
     parser.add_argument(

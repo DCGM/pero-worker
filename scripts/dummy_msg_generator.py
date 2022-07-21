@@ -15,7 +15,7 @@ import time
 # connection auxiliary formatting functions
 import worker_functions.connection_aux_functions as cf
 
-from publisher import zk_get_mq_servers
+from publisher import ZkPublisher
 from worker_functions.mq_client import MQClient
 
 # MQ
@@ -49,6 +49,21 @@ def parse_args():
         '-l', '--zookeeper-list',
         help='File with list of zookeeper servers. One server per line.',
         type=argparse.FileType('r')
+    )
+    parser.add_argument(
+        '-u', '--username',
+        help='Username for authentication on server.',
+        default=None
+    )
+    parser.add_argument(
+        '-p', '--password',
+        help='Password for user authentication.',
+        default=None
+    )
+    parser.add_argument(
+        '-e', '--ca-cert',
+        help='CA Certificate for SSL/TLS connection verification.',
+        default=None
     )
     parser.add_argument(
         '--size',
@@ -92,7 +107,7 @@ def parse_args():
         nargs='+'
     )
     parser.add_argument(
-        '-p', '--priority',
+        '-y', '--priority',
         help='Priority of tasks to upload.',
         type=int,
         default=0
@@ -100,12 +115,6 @@ def parse_args():
     return parser.parse_args()
 
 class DummyMsgGenerator(MQClient):
-    def __init__(self, mq_servers, logger):
-        super().__init__(mq_servers, logger)
-    
-    def __del__(self):
-        super().__del__()
-    
     def gen_trafic(self, number, interval, count, stages, priority, size_min, size_max):
         """
         Generates messages with given parameters
@@ -186,14 +195,29 @@ def main():
         zookeeper_servers = cf.zk_server_list(args.zookeeper_list)
     
     # get MQ server list from zookeeper
-    mq_servers = zk_get_mq_servers(zookeeper_servers, logger=logger)
+    zk_client = ZkPublisher(
+        zookeeper_servers=zookeeper_servers,
+        username=args.username,
+        password=args.password,
+        ca_cert=args.ca_cert,
+        logger=logger
+    )
+    mq_servers = ZkPublisher.zk_get_mq_servers(zookeeper_servers)
+    zk_client.zk_disconnect()
     
     if not mq_servers:
         logger.error('Failed to get list of MQ servers from zookeeper!')
         return 1
 
     # connect to mq
-    generator = DummyMsgGenerator(mq_servers, logger)
+    generator = DummyMsgGenerator(
+        mq_servers=mq_servers,
+        username=args.username,
+        password=args.password,
+        ca_cert=args.ca_cert,
+        logger=logger
+    )
+
     if args.interval:
         heartbeat = args.interval + 20
     else:

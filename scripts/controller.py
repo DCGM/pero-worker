@@ -10,6 +10,7 @@ import traceback
 # aux functions
 import worker_functions.connection_aux_functions as cf
 import worker_functions.constants as constants
+from worker_functions.zk_client import ZkClient
 
 # zookeeper
 from kazoo.client import KazooClient
@@ -44,121 +45,140 @@ def parse_args():
         type=argparse.FileType('r')
     )
     parser.add_argument(
-        '--status', '-s',
+        '-u', '--username',
+        help='Username for authentication on server.',
+        default=None
+    )
+    parser.add_argument(
+        '-p', '--password',
+        help='Password for user authentication.',
+        default=None
+    )
+    parser.add_argument(
+        '-e', '--ca-cert',
+        help='CA Certificate for SSL/TLS connection verification.',
+        default=None
+    )
+    parser.add_argument(
+        '-s', '--status',
         help='Get status of the workers',
         action='store_true'
     )
     parser.add_argument(
-        '--queues', '-q',
+        '-q', '--queues',
         help='Get status of the queues declared in system',
         action='store_true'
     )
     parser.add_argument(
-        '--switch', '-i',
+        '-i', '--switch',
         help='Switch worker to different queue. Specify worker id and target queue',
         nargs=2
     )
     parser.add_argument(
-        '--shutdown', '-d',
+        '-d', '--shutdown',
         help='Shutdown worker with given id.',
         nargs='+'
     )
     parser.add_argument(
-        '--remove', '-r',
+        '-r', '--remove',
         help='Remove worker record from zookeeper.',
         nargs='+'
     )
     parser.add_argument(
-        '--command', '-c',
+        '-c', '--command',
         help='Zookeeper command to run'
     )
     return parser.parse_args()
 
-def get_worker_status(zk):
+class Controller(ZkClient):
     """
-    Logs status of the workers.
-    :param zk: zookeeper connection instance
-    :raise: ZookeeperError if server returns non-zero error code
+    Controller for workers and watchdog.
     """
-    try:
-        worker_ids = zk.get_children(constants.WORKER_STATUS)
-        for worker in worker_ids:
-            try:
-                worker_status = zk.get(constants.WORKER_STATUS_TEMPLATE.format(worker_id = worker))
-                worker_queue = zk.get(constants.WORKER_QUEUE_TEMPLATE.format(worker_id = worker))
-                logger.info('Worker ID: {worker}, status: {status}, queue: {queue}'.format(
-                    worker = worker,
-                    status = worker_status[0].decode(),
-                    queue = worker_queue[0].decode()
-                ))
-            except NoNodeError:
-                logger.info('Worker ID: {worker}, status: {status}, queue: '.format(
-                    worker = worker,
-                    status = constants.STATUS_FAILED
-                ))
-    except NoNodeError:
-        logger.info('No workers are connected')
 
-def switch_worker(zk, worker, queue):
-    """
-    Switch given worker to given queue.
-    :param zk: zookeeper connection
-    :param worker: worker id
-    :param queue: queue to switch to
-    :raise: ZookeeperError if server returns non-zero error code
-    """
-    try:
-        worker_ids = zk.get_children(constants.WORKER_STATUS)
-    except NoNodeError:
-        logger.info('No workers are connected')
-        return
-    
-    if worker not in worker_ids:
-        logger.error('Worker with id {} does not exist!'.format(worker))
-        return
-    
-    # TODO
-    # Add queue name validation
+    def get_worker_status():
+        """
+        Logs status of the workers.
+        :raise: ZookeeperError if server returns non-zero error code
+        """
+        try:
+            worker_ids = self.zk.get_children(constants.WORKER_STATUS)
+            for worker in worker_ids:
+                try:
+                    worker_status = self.zk.get(constants.WORKER_STATUS_TEMPLATE.format(worker_id = worker))
+                    worker_queue = self.zk.get(constants.WORKER_QUEUE_TEMPLATE.format(worker_id = worker))
+                    self.logger.info('Worker ID: {worker}, status: {status}, queue: {queue}'.format(
+                        worker = worker,
+                        status = worker_status[0].decode(),
+                        queue = worker_queue[0].decode()
+                    ))
+                except NoNodeError:
+                    self.logger.info('Worker ID: {worker}, status: {status}, queue: '.format(
+                        worker = worker,
+                        status = constants.STATUS_FAILED
+                    ))
+        except NoNodeError:
+            self.logger.info('No workers are connected')
 
-    zk.set(constants.WORKER_QUEUE_TEMPLATE.format(worker_id = worker), queue.encode('utf-8'))
+    def switch_worker(worker, queue):
+        """
+        Switch given worker to given queue.
+        :param zk: zookeeper connection
+        :param worker: worker id
+        :param queue: queue to switch to
+        :raise: ZookeeperError if server returns non-zero error code
+        """
+        try:
+            worker_ids = self.zk.get_children(constants.WORKER_STATUS)
+        except NoNodeError:
+            self.logger.info('No workers are connected')
+            return
+        
+        if worker not in worker_ids:
+            self.logger.error('Worker with id {} does not exist!'.format(worker))
+            return
+        
+        # TODO
+        # Add queue name validation
 
-def shutdown_worker(zk, worker):
-    """
-    Shutdown given worker.
-    :param zk: zookeeper connection
-    :param worker: worker id
-    :raise: ZookeeperError if server returns non-zero error code
-    """
-    try:
-        worker_ids = zk.get_children(constants.WORKER_STATUS)
-    except NoNodeError:
-        logger.info('No workers are connected')
-        return
-    
-    if worker not in worker_ids:
-        logger.error('worker with id {} does not exist!'.format(worker))
-        return
-    
-    zk.set(constants.WORKER_ENABLED_TEMPLATE.format(worker_id = worker), 'false'.encode('utf-8'))
+        self.zk.set(constants.WORKER_QUEUE_TEMPLATE.format(worker_id = worker), queue.encode('utf-8'))
 
-def remove_worker(zk, worker):
-    """
-    Removes worker record from zookeeper.
-    :param zk: zookeeper connection
-    :param worker: worker id
-    :raise: ZookeeperError if zookeeper server returns non-zero error code
-    """
-    try:
-        worker_ids = zk.get_children(constants.WORKER_STATUS)
-    except NoNodeError:
-        logger.info('No workers are connected')
-        return
-    
-    if worker not in worker_ids:
-        logger.error('Worker with id {} does not exist!'.format(worker))
-        return
-    
-    zk.delete(constants.WORKER_STATUS_ID_TEMPLATE.format(worker_id = worker), recursive=True)
+    def shutdown_worker(worker):
+        """
+        Shutdown given worker.
+        :param zk: zookeeper connection
+        :param worker: worker id
+        :raise: ZookeeperError if server returns non-zero error code
+        """
+        try:
+            worker_ids = self.zk.get_children(constants.WORKER_STATUS)
+        except NoNodeError:
+            self.logger.info('No workers are connected')
+            return
+        
+        if worker not in worker_ids:
+            self.logger.error('worker with id {} does not exist!'.format(worker))
+            return
+        
+        self.zk.set(constants.WORKER_ENABLED_TEMPLATE.format(worker_id = worker), 'false'.encode('utf-8'))
+
+    def remove_worker(worker):
+        """
+        Removes worker record from zookeeper.
+        :param zk: zookeeper connection
+        :param worker: worker id
+        :raise: ZookeeperError if zookeeper server returns non-zero error code
+        """
+        try:
+            worker_ids = self.zk.get_children(constants.WORKER_STATUS)
+        except NoNodeError:
+            self.logger.info('No workers are connected')
+            return
+        
+        if worker not in worker_ids:
+            self.logger.error('Worker with id {} does not exist!'.format(worker))
+            return
+        
+        self.zk.delete(constants.WORKER_STATUS_ID_TEMPLATE.format(worker_id = worker), recursive=True)
 
 def main():
     args = parse_args()
@@ -168,21 +188,22 @@ def main():
     if args.zookeeper_list:
         zookeeper_servers = cf.zk_server_list(args.zookeeper_list)
 
-    zk = KazooClient(hosts=zookeeper_servers)
-
-    try:
-        zk.start(timeout=20)
-    except KazooTimeoutError:
-        logger.critical('Zookeeper connection timeout!')
-        return 1
+    controller = Controller(
+        zookeeper_servers=zookeeper_servers,
+        username=args.username,
+        password=args.password,
+        ca_cert=args.ca_cert,
+        logger=logger
+    )
+    controller.zk_connect()
 
     # get worker status
     if args.status:
         try:
-            get_worker_status(zk)
+            controller.get_worker_status(zk)
         except ZookeeperError as e:
-            logger.error('Failed to get status of the workers!')
-            logger.error('Received error message: {}'.format(e))
+            self.logger.error('Failed to get status of the workers!')
+            self.logger.error('Received error message: {}'.format(e))
     
     # TODO
     # get queue status
@@ -192,13 +213,13 @@ def main():
     # switch worker to different queue
     if args.switch:
         try:
-            switch_worker(zk, args.switch[0], args.switch[1])
+            controller.switch_worker(args.switch[0], args.switch[1])
         except Exception as e:
-            logger.error('Failed to switch worker {worker} to queue {queue}!'.format(
+            self.logger.error('Failed to switch worker {worker} to queue {queue}!'.format(
                 worker = args.switch[0],
                 queue = args.switch[1]
             ))
-            logger.error('Received error message: {}'.format(e))
+            self.logger.error('Received error message: {}'.format(e))
 
     # TODO
     # run command in zookeeper
@@ -209,24 +230,21 @@ def main():
     if args.shutdown:
         for worker in args.shutdown:
             try:
-                shutdown_worker(zk, worker)
+                controller.shutdown_worker(worker)
             except Exception as e:
-                logger.error('Failed to shutdown worker {}!'.format(args.shutdown))
-                logger.error('Received error message: {}'.format(e))
+                self.logger.error('Failed to shutdown worker {}!'.format(args.shutdown))
+                self.logger.error('Received error message: {}'.format(e))
     
     # remove worker from zookeeper
     if args.remove:
         for worker in args.remove:
             try:
-                remove_worker(zk, worker)
+                controller.remove_worker(worker)
             except Exception as e:
-                logger.error('Failed to remove worker {} from zookeeper!'.format(args.remove))
-                logger.error('Received error message: {}'.format(e))
+                self.logger.error('Failed to remove worker {} from zookeeper!'.format(args.remove))
+                self.logger.error('Received error message: {}'.format(e))
                 traceback.print_exc()
-
-    # close connection and exit
-    zk.stop()
-    zk.close()
+    
     return 0
 
 
