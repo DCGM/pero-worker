@@ -12,15 +12,19 @@ class SFTP_Client:
     SFTP Client
     """
 
-    def __init__(self, sftp_servers = [], username = 'pero', password = 'pero', logger = logging.getLogger(__name__)):
+    def __init__(self, sftp_servers=[], username=None, password=None, logger = logging.getLogger(__name__)):
         self.sftp_servers = sftp_servers
         self.logger = logger
 
         self.sftp_connection = None
         self.ssh_connection = None
 
-        self.username = username
-        self.password = password
+        if username:
+            self.username = username
+            self.password = password
+        else:
+            self.username = 'pero'
+            self.password = 'pero'
     
     def sftp_connect(self):
         """
