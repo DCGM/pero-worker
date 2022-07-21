@@ -55,14 +55,19 @@ def parse_args():
         type=argparse.FileType('r')
     )
     parser.add_argument(
-        '-u', '--user',
-        help='Username for server authentication.',
-        default='guest'  # this is for testing only!
+        '-u', '--username',
+        help='Username for authentication on server.',
+        default=None
     )
     parser.add_argument(
         '-p', '--password',
         help='Password for user authentication.',
-        default='guest'  # this is for testing only!
+        default=None
+    )
+    parser.add_argument(
+        '-e', '--ca-cert',
+        help='CA Certificate for SSL/TLS connection verification.',
+        default=None
     )
     parser.add_argument(
         '--dry-run',
@@ -78,9 +83,15 @@ class WorkerWatchdog(ZkClient):
     minimal_message_number = 10  # minimal number of messages to process before worker can be switched
     minimal_reconfiguration_time = 10  # time needed for worker to switch queue + time needed to apply configuration changes by watchdog
 
-    def __init__(self, zookeeper_servers, user='guest', password='guest', dry_run=False, mq_servers_monitoring = [], logger = logging.getLogger(__name__)):
+    def __init__(self, zookeeper_servers, username=None, password=None, ca_cert=None, dry_run=False, mq_servers_monitoring = [], logger = logging.getLogger(__name__)):
         # init zookeeper client
-        super().__init__(zookeeper_servers=zookeeper_servers, logger=logger)
+        super().__init__(
+            zookeeper_servers=zookeeper_servers,
+            username=username,
+            password=password,
+            ca_cert=ca_cert,
+            logger=logger
+        )
 
         # last time when statistics were downloaded - type datetime.datetime()
         self.last_sample_time = None
@@ -88,10 +99,6 @@ class WorkerWatchdog(ZkClient):
         # MQ server list
         self.mq_servers_monitoring = mq_servers_monitoring
         self.mq_servers_lock = threading.Lock()
-
-        # user and password for MQ monitoring api
-        self.user = user
-        self.password = password
 
         # dry run for testing of priority calculation
         self.dry_run = dry_run
@@ -197,7 +204,8 @@ class WorkerWatchdog(ZkClient):
                 try:
                     response = requests.get(
                         self.queue_request.format(server = cf.ip_port_to_string(server)),
-                        auth=(self.user, self.password)
+                        auth=(self.username, self.password),
+                        verify=self.ca_cert
                     )
                 except requests.exceptions.RequestException:
                     self.logger.error(
@@ -641,8 +649,9 @@ def main():
 
     watchdog = WorkerWatchdog(
         zookeeper_servers=zookeeper_servers,
-        user=args.user,
+        username=args.username,
         password=args.password,
+        ca_cert=args.ca_cert,
         dry_run=args.dry_run
     )
 
