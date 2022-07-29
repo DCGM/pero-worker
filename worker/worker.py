@@ -96,7 +96,8 @@ def parse_args():
     )
     argparser.add_argument(
         '-i', '--id',
-        help='Worker id for identification in zookeeper'
+        help='Worker id for identification in zookeeper',
+        default=None
     )
     argparser.add_argument(
         '-b', '--broker-servers',
@@ -1238,6 +1239,7 @@ def main():
         mq_servers=mq_servers,
         ftp_servers=ftp_servers,
         tmp_directory=tmp_dir,
+        worker_id = args.id,
         logger=logging.getLogger(__name__)
     )
 
