@@ -96,6 +96,9 @@ class WorkerWatchdog(ZkClient):
         # credentials to use with management console requests
         self.username = username
         self.password = password
+        if not username:
+            self.username = 'guest'
+            self.password = 'guest'
 
         # last time when statistics were downloaded - type datetime.datetime()
         self.last_sample_time = None
