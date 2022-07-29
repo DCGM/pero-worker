@@ -1239,7 +1239,7 @@ def main():
         mq_servers=mq_servers,
         ftp_servers=ftp_servers,
         tmp_directory=tmp_dir,
-        worker_id = args.id,
+        worker_id=args.id,
         logger=logging.getLogger(__name__)
     )
 
