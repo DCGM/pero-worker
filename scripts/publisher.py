@@ -14,6 +14,7 @@ from stats import StatsCounter
 # connection auxiliary formatting functions
 import worker_functions.connection_aux_functions as cf
 from worker_functions.mq_client import MQClient
+from worker_functions.zk_client import ZkClient
 
 # config
 import worker_functions.constants as constants
@@ -79,6 +80,21 @@ def parse_args():
         type=argparse.FileType('r')
     )
     parser.add_argument(
+        '-u', '--username',
+        help='Username for authentication on server.',
+        default=None
+    )
+    parser.add_argument(
+        '-p', '--password',
+        help='Password for user authentication.',
+        default=None
+    )
+    parser.add_argument(
+        '-e', '--ca-cert',
+        help='CA Certificate for SSL/TLS connection verification.',
+        default=None
+    )
+    parser.add_argument(
         '-d', '--download',
         help='Queue with data to download.'
     )
@@ -105,7 +121,7 @@ def parse_args():
         nargs='+'
     )
     parser.add_argument(
-        '-p', '--priority',
+        '-y', '--priority',
         help='Priority of tasks to upload.',
         type=int,
         default=0
@@ -125,10 +141,13 @@ def parse_args():
     return parser.parse_args()
 
 class Publisher(MQClient):
-    def __init__(self, mq_servers, count_stats = False, save_message = False):
+    def __init__(self, mq_servers, username = '', password = '', ca_cert = None, count_stats = False, save_message = False):
         super().__init__(
             mq_servers = mq_servers,
-            logger = logger
+            logger = logger,
+            username = username,
+            password = password,
+            ca_cert = ca_cert
         )
         # Flag to stop downloading from queue
         self.queue_empty = False
@@ -337,47 +356,29 @@ class Publisher(MQClient):
                 logger.error('Message was not confirmed by the MQ broker!')
                 logger.error('Received error: {}'.format(e))
 
-def zk_get_mq_servers(zookeeper_servers, logger = logging.getLogger(__name__)):
+class ZkPublisher(ZkClient):
     """
-    Get list of mq servers from zookeeper
-    :param zookeeper_servers: list of zookeeper servers
-    :param logger: logger to use
-    :return: list of mq servers or None
+    Client for obtaining configuration from zookeeper
     """
-    mq_servers = None
 
-    # connect to zookeeper
-    zk = KazooClient(hosts=zookeeper_servers)
-    try:
-        zk.start(timeout=20)
-    except KazooTimeoutError:
-        logger.error('Failed to connect to zookeeper!')
-        return None
-    
-    # get server list
-    try:
-        mq_servers = zk.get_children(constants.WORKER_CONFIG_MQ_SERVERS)
-    except Exception:
-        logger.error('Failed to obtain MQ server list from zookeeper!')
-        traceback.print_exc()
+    def zk_get_mq_servers(self, zookeeper_servers):
+        """
+        Get list of mq servers from zookeeper
+        :param zookeeper_servers: list of zookeeper servers
+        :param logger: logger to use
+        :return: list of mq servers or None
+        """
         mq_servers = None
-    
-    # close connection
-    try:
-        zk.stop()
-        zk.close()
-    except Exception:
-        logger.error('Failed to close connection to zookeeper!')
-        traceback.print_exc()
-    
-    # if server list was not obtained, exit
-    if not mq_servers:
-        return None
-
-    # parse mq server list obtained from zookeeper
-    mq_servers = cf.server_list(mq_servers)
-    
-    return mq_servers
+        
+        # get server list
+        try:
+            mq_servers = cf.server_list(self.zk.get_children(constants.WORKER_CONFIG_MQ_SERVERS))
+        except Exception:
+            self.logger.error('Failed to obtain MQ server list from zookeeper!')
+            traceback.print_exc()
+            mq_servers = None
+        
+        return mq_servers
 
 def main():
     args = parse_args()
@@ -397,14 +398,29 @@ def main():
     
     # get MQ server list from zookeeper
     if not mq_servers:
-        mq_servers = zk_get_mq_servers(zookeeper_servers)
+        zk_client = ZkPublisher(
+            zookeeper_servers = zookeeper_servers,
+            username = args.username,
+            password = args.password,
+            ca_cert = args.ca_cert
+        )
+        zk_client.zk_connect()
+        mq_servers = zk_client.zk_get_mq_servers(zookeeper_servers)
+        zk_client.zk_disconnect()
 
     if not mq_servers:
         logger.error('Failed to get mq servers!')
         return 1
 
     # connect to mq
-    publisher = Publisher(mq_servers, count_stats=args.count_statistics, save_message=args.save_message)
+    publisher = Publisher(
+        mq_servers=mq_servers,
+        username=args.username,
+        password=args.password,
+        ca_cert=args.ca_cert,
+        count_stats=args.count_statistics,
+        save_message=args.save_message
+    )
     publisher.mq_connect()
 
     error_code = 0

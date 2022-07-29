@@ -3,6 +3,7 @@
 # Worker for page processing
 
 import pika  # AMQP protocol library for queues
+import ssl
 import logging
 import time
 import sys
@@ -95,7 +96,8 @@ def parse_args():
     )
     argparser.add_argument(
         '-i', '--id',
-        help='Worker id for identification in zookeeper'
+        help='Worker id for identification in zookeeper',
+        default=None
     )
     argparser.add_argument(
         '-b', '--broker-servers',
@@ -115,14 +117,19 @@ def parse_args():
         type=dir_path
     )
     argparser.add_argument(
-        '-u', '--user',
-        help='Username for server authentication.',
-        default='pero'  # this is for testing only!
+        '-u', '--username',
+        help='Username for authentication on server.',
+        default=None
     )
     argparser.add_argument(
         '-p', '--password',
         help='Password for user authentication.',
-        default='pero'  # this is for testing only!
+        default=None
+    )
+    argparser.add_argument(
+        '-e', '--ca-cert',
+        help='CA Certificate for SSL/TLS connection verification.',
+        default=None
     )
     return argparser.parse_args()
 
@@ -133,19 +140,27 @@ class Worker(object):
 
     def __init__(
         self,
-        user,
-        password,
         zookeeper_servers,
         mq_servers = [],
         ftp_servers = [],
+        username = None,
+        password = None,
+        ca_cert = None,
         worker_id = None,
         tmp_directory = None,
         logger = logging.getLogger(__name__)
     ):
         """
         Initialize worker
+        :param zookeeper_servers: list of zookeeper servers
+        :param mq_servers: list of message broker servers
+        :param ftp_servers: list of ftp servers
+        :param username: username for authentication on server
+        :param password: password for user authentication
+        :param ca_cert: path to CA certificate to verify SSL/TLS connection
         :param worker_id: worker identifier
         :param tmp_directory: path to temporary directory
+        :param logger: logger instance to use for logging
         """
 
         # worker configuration
@@ -167,9 +182,32 @@ class Worker(object):
         self.ocr_path = None
         self.page_parser = None
 
-        # ftp login
-        self.user = user
+        # server login credentials
+        self.username = username
         self.password = password
+        self.ca_cert = ca_cert
+
+        if username:
+            # authentication credentials (SASL) for zookeeper
+            self.zk_auth = {
+                'mechanism': 'DIGEST-MD5',
+                'username': str(username),
+                'password': str(password)
+            }
+            # authentication for RabbitMQ
+            self.mq_auth = pika.credentials.PlainCredentials(str(username), str(password))
+        else:
+            self.zk_auth = None
+            self.mq_auth = pika.connection.ConnectionParameters.DEFAULT_CREDENTIALS
+        
+        # SSL/TLS settings for RabbitMQ
+        if ca_cert:
+            context = ssl.SSLContext(ssl.PROTOCOL_TLSv1_2)
+            context.verify_mode = ssl.CERT_REQUIRED
+            context.load_verify_locations(ca_cert)
+            self.ssl_options = pika.SSLOptions(context)
+        else:
+            self.ssl_options = pika.connection.ConnectionParameters.DEFAULT_SSL_OPTIONS
 
         # worker connections
         self.mq_channel = None
@@ -247,7 +285,7 @@ class Worker(object):
         Creates new SFTP connection
         """
         self.ftp_servers_lock.acquire()
-        sftp = SFTP_Client(self.ftp_servers, self.user, self.password, self.logger)
+        sftp = SFTP_Client(self.ftp_servers, self.username, self.password, self.logger)
         self.ftp_servers_lock.release()
         sftp.sftp_connect()
         return sftp
@@ -273,7 +311,12 @@ class Worker(object):
             return
 
         # create new connection
-        self.zk = KazooClient(hosts=self.zookeeper_servers)
+        self.zk = KazooClient(
+            hosts=self.zookeeper_servers,
+            ca=self.ca_cert,
+            use_ssl=True if self.ca_cert else False,
+            sasl_options=self.zk_auth
+        )
 
         try:
             self.zk.start(timeout=20)
@@ -621,6 +664,9 @@ class Worker(object):
             pika.ConnectionParameters(
                 host=self.mq_server['ip'],
                 port=self.mq_server['port'] if self.mq_server['port'] else pika.ConnectionParameters.DEFAULT_PORT,
+                credentials=self.mq_auth,
+                ssl_options=self.ssl_options,
+                virtual_host=constants.MQ_VHOST,
                 heartbeat=600,
                 connection_attempts=10
             ),
@@ -1186,12 +1232,14 @@ def main():
     tmp_dir = args.tmp_directory if args.tmp_directory else None
 
     worker = Worker(
-        user=args.user,
+        username=args.username,
         password=args.password,
+        ca_cert=args.ca_cert,
         zookeeper_servers=zk_servers,
         mq_servers=mq_servers,
         ftp_servers=ftp_servers,
         tmp_directory=tmp_dir,
+        worker_id = args.id,
         logger=logging.getLogger(__name__)
     )
 
