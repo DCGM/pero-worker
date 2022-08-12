@@ -179,9 +179,9 @@ class ZkConfigManager(ZkClient):
         :raise: ZookeeperError if server returns non-zero error code
         """
         for server in server_list:
-            server_ip_port = cf.ip_port_to_string(server)
-            self.logger.debug(os.path.join(path, server_ip_port))
-            self.zk.ensure_path(os.path.join(path, server_ip_port))
+            server_host_port = cf.host_port_to_string(server)
+            self.logger.debug(os.path.join(path, server_host_port))
+            self.zk.ensure_path(os.path.join(path, server_host_port))
 
     def zk_delete_server_list(self, server_list, path):
         """
@@ -191,9 +191,9 @@ class ZkConfigManager(ZkClient):
         :raise: ZookeeperError if server returns non-zero error code
         """
         for server in server_list:
-            server_ip_port = cf.ip_port_to_string(server)
-            if self.zk.exists(os.path.join(path, server_ip_port)):
-                self.zk.delete(os.path.join(path, server_ip_port))
+            server_host_port = cf.host_port_to_string(server)
+            if self.zk.exists(os.path.join(path, server_host_port)):
+                self.zk.delete(os.path.join(path, server_host_port))
     
     def zk_get_server_list(self, path):
         """

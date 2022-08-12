@@ -214,21 +214,21 @@ class WorkerWatchdog(ZkClient):
             for server in self.mq_servers_monitoring:
                 try:
                     response = requests.get(
-                        queue_request.format(server = cf.ip_port_to_string(server)),
+                        queue_request.format(server = cf.host_port_to_string(server)),
                         auth=(self.username, self.password),
                         verify=self.ca_cert
                     )
                 except requests.exceptions.RequestException:
                     self.logger.error(
                         'Failed to connect to broker monitoring api on server {}'
-                        .format(cf.ip_port_to_string(server))
+                        .format(cf.host_port_to_string(server))
                     )
                     self.logger.error('Received error:\n{}'.format(traceback.format_exc()))
                 else:
                     if not response.ok:
                         self.logger.error(
                             'Failed to get queue status from server {}'
-                            .format(cf.ip_port_to_string(server))
+                            .format(cf.host_port_to_string(server))
                         )
                         self.logger.error('Status code: {status}, message: {reason}'.format(
                             status = response.status_code,

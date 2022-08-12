@@ -659,10 +659,10 @@ class Worker(object):
         self.mq_server_lock.release()
         
         # connect to selected mq server
-        self.logger.info('Connecting to MQ server {}'.format(cf.ip_port_to_string(self.mq_server)))
+        self.logger.info('Connecting to MQ server {}'.format(cf.host_port_to_string(self.mq_server)))
         self.mq_connection = pika.SelectConnection(
             pika.ConnectionParameters(
-                host=self.mq_server['ip'],
+                host=self.mq_server['host'],
                 port=self.mq_server['port'] if self.mq_server['port'] else pika.ConnectionParameters.DEFAULT_PORT,
                 credentials=self.mq_auth,
                 ssl_options=self.ssl_options,

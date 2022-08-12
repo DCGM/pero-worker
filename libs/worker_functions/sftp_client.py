@@ -38,10 +38,10 @@ class SFTP_Client:
         # connect to firs server avaliable
         for server in self.sftp_servers:
             try:
-                self.logger.info('Connectiong to SFTP server {}'.format(cf.ip_port_to_string(server)))
+                self.logger.info('Connectiong to SFTP server {}'.format(cf.host_port_to_string(server)))
                 # get SSH connection
                 self.ssh_connection.connect(
-                    hostname=server['ip'],
+                    hostname=server['host'],
                     port=server['port'],
                     username=self.username,
                     password=self.password,
@@ -56,7 +56,7 @@ class SFTP_Client:
                 continue
             except Exception as e:
                 self.logger.error('Failed to connect to SFTP server {server}! Received error:\n{error}'.format(
-                    server = cf.ip_port_to_string(server),
+                    server = cf.host_port_to_string(server),
                     error = e
                 ))
                 continue

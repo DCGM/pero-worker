@@ -45,10 +45,10 @@ class MQClient:
         """
         for server in self.mq_servers:
             try:
-                self.logger.info('Connectiong to MQ server {}'.format(cf.ip_port_to_string(server)))
+                self.logger.info('Connectiong to MQ server {}'.format(cf.host_port_to_string(server)))
                 self.mq_connection = pika.BlockingConnection(
                     pika.ConnectionParameters(
-                        host=server['ip'],
+                        host=server['host'],
                         port=server['port'] if server['port'] else pika.connection.ConnectionParameters.DEFAULT_PORT,
                         ssl_options=self.ssl_options,
                         credentials=self.mq_auth,
