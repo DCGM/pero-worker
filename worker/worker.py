@@ -997,7 +997,7 @@ class Worker(object):
         
         if xml_out and not xml_in:
             xml = processing_request.results.add()
-            xml.name = '{}.xml'.format(img_name)
+            xml.name = '{}_page.xml'.format(img_name)
             xml.content = xml_out.encode('utf-8')
         
         if logits_out and not logits_in:
