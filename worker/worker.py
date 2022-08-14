@@ -947,6 +947,7 @@ class Worker(object):
         """
         # load data
         img = None
+        img_name = 'page'
         xml_in = None
         logits_in = None
 
@@ -956,6 +957,7 @@ class Worker(object):
             self.logger.debug(f'File: {data.name}, type: {datatype}')
             if datatype.split('/')[0] == 'image':  # recognize image
                 img = cv2.imdecode(np.fromstring(processing_request.results[i].content, dtype=np.uint8), 1)
+                img_name = processing_request.results[i].name
             if ext == '.xml':  # pagexml is missing xml header - type can't be recognized - type = text/plain
                 xml_in = processing_request.results[i].content
             if ext == '.logits':  # type = application/octet-stream
@@ -995,12 +997,12 @@ class Worker(object):
         
         if xml_out and not xml_in:
             xml = processing_request.results.add()
-            xml.name = 'page.xml'
+            xml.name = '{}.xml'.format(img_name)
             xml.content = xml_out.encode('utf-8')
         
         if logits_out and not logits_in:
             logits = processing_request.results.add()
-            logits.name = 'page.logits'
+            logits.name = '{}.logits'.format(img_name)
             logits.content = logits_out
 
     @staticmethod
