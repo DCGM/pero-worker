@@ -6,6 +6,7 @@ import sys
 import os
 import logging
 import argparse
+import datetime
 
 # worker libraries
 import worker_functions.connection_aux_functions as cf
@@ -99,6 +100,17 @@ def parse_args():
         '-c', '--config',
         help='Path to configuration file.',
         type=argparse.FileType('r')
+    )
+    parser.add_argument(
+        '-v', '--version',
+        help='Set configuration version. Usually utc date and time is used. (default = now)',
+        default=None
+    )
+    parser.add_argument(
+        '--keep-version',
+        help='Update configuration but not its version.',
+        default=False,
+        action='store_true'
     )
     parser.add_argument(
         '-r', '--remote-path',
@@ -222,6 +234,13 @@ class ZkConfigManager(ZkClient):
                 path=constants.QUEUE_CONFIG_ADMINISTRATIVE_PRIORITY_TEMPLATE.format(queue_name = queue),
                 value=int.to_bytes(0, sys.getsizeof(0), constants.ZK_INT_BYTEORDER)
             )
+    
+    def zk_upload_queue_config_version(self, queue, config_version):
+        self.zk.ensure_path(constants.QUEUE_CONFIG_VERSION_TEMPLATE.format(queue_name = queue))
+        self.zk.set(
+            path=constants.QUEUE_CONFIG_VERSION_TEMPLATE.format(queue_name = queue),
+            value=config_version.encode('utf-8')
+        )
 
     def zk_upload_remote_config_path(self, queue, remote_path):
         self.zk.ensure_path(constants.QUEUE_CONFIG_PATH_TEMPLATE.format(queue_name = queue))
@@ -311,6 +330,7 @@ def main():
         if args.monitoring_servers:
             monitoring_servers = cf.server_list(args.monitoring_servers)
         else:
+            # use MQ servers with default monitoring port
             monitoring_servers = cf.server_list(args.mq_servers)
             for server in monitoring_servers:
                 server['port'] = None
@@ -329,14 +349,30 @@ def main():
             logger.info('MQ monitoring servers updated successfully!')
 
         if args.name:
-            # upload configuration
-            if args.config:
-                zk_config_manager.zk_upload_queue_config(args.name, args.config)
-                logger.info('Configuration uploaded successfully!')
+            # get config version
+            if args.version == 'now' or not args.version:
+                version = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+            else:
+                version = args.version
             
+            # update config version
+            if args.version and not args.keep_version:
+                logger.info('Setting config version to {version}'.format(version = version))
+                zk_config_manager.zk_upload_queue_config_version(args.name, version)
+            
+            # update path to remote configuration
             if args.remote_path:
                 logger.info('Setting remote config path to {}'.format(args.remote_path))
+                if not args.keep_version:
+                    zk_config_manager.zk_upload_queue_config_version(args.name, version)
                 zk_config_manager.zk_upload_remote_config_path(args.name, args.remote_path)
+
+            # upload configuration
+            if args.config:
+                if not args.keep_version:
+                    zk_config_manager.zk_upload_queue_config_version(args.name, version)
+                zk_config_manager.zk_upload_queue_config(args.name, args.config)
+                logger.info('Configuration uploaded successfully!')
             
             if isinstance(args.administrative_priority, int):
                 logger.info(

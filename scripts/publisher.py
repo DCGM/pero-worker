@@ -196,11 +196,12 @@ class Publisher(MQClient):
                 file.write(result.content)
         for log in message.logs:
             with open(os.path.join(directory, f'{log.stage}.log'), 'w') as file:
-                file.write(f'Host id    : {log.host_id}\n')
-                file.write(f'Stage      : {log.stage}\n')
-                file.write(f'Start time : {log.start.ToDatetime().isoformat()}\n')
-                file.write(f'End time   : {log.end.ToDatetime().isoformat()}\n')
-                file.write(f'Status     : {log.status}\n')
+                file.write(f'Host id       : {log.host_id}\n')
+                file.write(f'Stage         : {log.stage}\n')
+                file.write(f'Start time    : {log.start.ToDatetime().isoformat()}\n')
+                file.write(f'End time      : {log.end.ToDatetime().isoformat()}\n')
+                file.write(f'Status        : {log.status}\n')
+                file.write(f'Stage version : {log.version}\n')
                 file.write('*** Log ***\n')
                 file.write(log.log)
         
