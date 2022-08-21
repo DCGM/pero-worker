@@ -983,7 +983,7 @@ class Worker(object):
             raise
         
         # save output
-        xml_out = page_layout.to_pagexml_string(creator=self.config_version)
+        xml_out = page_layout.to_pagexml_string()
         try:
             logits_out = page_layout.save_logits_bytes()
         except Exception:
