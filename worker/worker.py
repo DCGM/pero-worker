@@ -972,7 +972,7 @@ class Worker(object):
                 page_layout = PageLayout()
                 page_layout.from_pagexml_string(xml_in)
             else:
-                page_layout = PageLayout(id=processing_request.page_uuid, page_size=(img.shape[0], img.shape[1]))
+                page_layout = PageLayout(id=img_name, page_size=(img.shape[0], img.shape[1]))
             if logits_in:
                 page_layout.load_logits(logits_in)
             page_layout = self.page_parser.process_page(img, page_layout)

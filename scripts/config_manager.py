@@ -351,7 +351,7 @@ def main():
         if args.name:
             # get config version
             if args.version == 'now' or not args.version:
-                version = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+                version = datetime.datetime.now(datetime.timezone.utc).isoformat()
             else:
                 version = args.version
             
