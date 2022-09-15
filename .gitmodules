@@ -4,4 +4,4 @@
 	branch = logits_buffers
 [submodule "libs"]
 	path = libs
-	url = git@github.com:DCGM/pero-worker-libs.git
+	url = https://github.com/DCGM/pero-worker-libs.git
