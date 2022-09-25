@@ -27,6 +27,7 @@ import cv2
 import pickle
 import magic
 import numpy as np
+import torch
 
 # pero OCR
 from pero_ocr.document_ocr.layout import PageLayout
@@ -1027,6 +1028,9 @@ class Worker(object):
         Loads ocr for stage given by name
         :param name: name of config/queue of the stage
         """
+        # clear current ocr from gpu cache
+        torch.cuda.empty_cache()
+
         # create ocr directory
         self.ocr_path = os.path.join(self.tmp_directory, name)
         if os.path.exists(self.ocr_path):
