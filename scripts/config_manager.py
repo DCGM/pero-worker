@@ -62,26 +62,6 @@ def parse_args():
         type=argparse.FileType('r')
     )
     parser.add_argument(
-        '-s', '--mq-servers',
-        help='List of message queue servers where to get and send processing requests.',
-        nargs='+'
-    )
-    parser.add_argument(
-        '-m', '--mq-list',
-        help='File containing list of message queue servers. One server per line.',
-        type=argparse.FileType('r')
-    )
-    parser.add_argument(
-        '--ftp-servers',
-        help='List of ftp servers to upload to zookeeper.',
-        nargs='+'
-    )
-    parser.add_argument(
-        '--monitoring-servers',
-        help='List of MQ monitring servers to upload to zookeeper.',
-        nargs='+'
-    )
-    parser.add_argument(
         '-u', '--username',
         help='Username for authentication on server.',
         default=None
@@ -127,12 +107,7 @@ def parse_args():
     )
     parser.add_argument(
         '-f', '--file',
-        help='File to upload. Argument can be used multiple times.',
-        action='append'
-    )
-    parser.add_argument(
-        '-t', '--target-file',
-        help='Target path where to upload file. If \'-d/--delete\' is specified, marks remote file for deletion. Argument can be used multiple times.',
+        help='File to upload to FTP server. (For usage with \'--remote-path\')',
         action='append'
     )
     parser.add_argument(
@@ -144,28 +119,6 @@ def parse_args():
     parser.add_argument(
         '-k', '--keep-config',
         help='Keep configuration and delete only queue. (Works only with \'-d/--delete\' argument.)',
-        default=False,
-        action='store_true'
-    )
-    parser.add_argument(
-        '--update-mq-servers',
-        help='Upload server list given by \'--mq-list\'/\'--mq-servers\' to zookeeper. '
-             'Deletes given servers from zookeeper if \'--delete\' is set!',
-        default=False,
-        action='store_true'
-    )
-    parser.add_argument(
-        '--update-ftp-servers',
-        help='Upload server list given by \'--ftp-servers\' to zookeeper. '
-             'Delete given server from zookeeper if \'--delete\' is set!',
-        default=False,
-        action='store_true'
-    )
-    parser.add_argument(
-        '--update-monitoring-servers',
-        help='Upload MQ monitoring servers - given by \'--mq-list\'/\'--mq-servers\' with port changed to default management port to zookeeper. '
-             'If \'--monitoring-servers\' is given, list of monitoring servers is used instead, port is not changed in this case. '
-             'If \'--delete\' is set, deletes servers from zookeper instead!',
         default=False,
         action='store_true'
     )
@@ -336,18 +289,6 @@ def main():
                 server['port'] = None
 
     if not args.delete:
-        if args.update_mq_servers:
-            zk_config_manager.zk_upload_server_list(mq_servers, constants.WORKER_CONFIG_MQ_SERVERS)
-            logger.info('MQ servers updated successfully!')
-        
-        if args.update_ftp_servers:
-            zk_config_manager.zk_upload_server_list(cf.server_list(args.ftp_servers), constants.WORKER_CONFIG_FTP_SERVERS)
-            logger.info('FTP servers updated successfully!')
-
-        if args.update_monitoring_servers:
-            zk_config_manager.zk_upload_server_list(monitoring_servers, constants.WORKER_CONFIG_MQ_MONITORING_SERVERS)
-            logger.info('MQ monitoring servers updated successfully!')
-
         if args.name:
             # get config version
             if args.version == 'now' or not args.version:
@@ -385,18 +326,6 @@ def main():
             mq_config_manager.mq_create_queue(args.name)
     
     else:
-        if args.update_mq_servers:
-            zk_config_manager.zk_delete_server_list(mq_servers, constants.WORKER_CONFIG_MQ_SERVERS)
-            logger.info('MQ servers deleted successfully!')
-        
-        if args.update_ftp_servers:
-            zk_config_manager.zk_delete_server_list(cf.server_list(args.ftp_servers), constants.WORKER_CONFIG_FTP_SERVERS)
-            logger.info('FTP servers deleted successfully!')
-        
-        if args.update_monitoring_servers:
-            zk_config_manager.zk_delete_server_list(monitoring_servers, constants.WORKER_CONFIG_MQ_MONITORING_SERVERS)
-            logger.info('MQ monitoring servers deleted successfully!')
-        
         if args.name:
             # delete configuration
             if not args.keep_config:
