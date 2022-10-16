@@ -10,7 +10,7 @@ import datetime
 import worker_functions.connection_aux_functions as cf
 import worker_functions.constants as constants
 from worker_functions.zk_client import ZkClient
-from config_manager import ZkConfigManager
+from stage_config_manager import ZkConfigManager
 
 # zookeeper
 import kazoo
