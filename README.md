@@ -219,12 +219,12 @@ docker run  -d --rm -p 2222:22 \
 
 Set default server addresses and ports for auto-configuration:
 ```
-python scripts/config_manager.py -z 127.0.0.1 -s 127.0.0.1 --ftp-servers 127.0.0.1:2222 --update-mq-servers --update-ftp-servers --update-monitoring-servers
+python scripts/server_config_manager.py -z 127.0.0.1 --add-mq-servers 127.0.0.1 --add-ftp-servers 127.0.0.1:2222 --add-monitoring-servers 127.0.0.1
 ```
 
 Create processing stages for OCR pipeline:
 ```
-python scripts/config_manager.py --name ocr_stage_x --config path/to/ocr_stage_x/config.ini --remote-path path/to/additional/data/on/ftp/server.tar.xz
+python scripts/stage_config_manager.py --name ocr_stage_x --config path/to/ocr_stage_x/config.ini --remote-path path/to/additional/data/on/ftp/server.tar.xz
 ```
 Please note that you must upload additional files to SFTP server manually. Command above specifies just path used by worker to download these files from the server. To upload files use your favourite SFTP client.
 
@@ -232,7 +232,7 @@ For more details on configurations please visit pero-ocr git (https://github.com
 
 Create output queue from where results can be downloaded. Output queue is stage without processing configuration.
 ```
-python scripts/config_manager.py --name out
+python scripts/stage_config_manager.py --name out
 ```
 
 ## Running worker and watchdog

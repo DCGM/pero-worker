@@ -223,7 +223,7 @@ class WorkerWatchdog(ZkClient):
                         'Failed to connect to broker monitoring api on server {}'
                         .format(cf.host_port_to_string(server))
                     )
-                    self.logger.error('Received error:\n{}'.format(traceback.format_exc()))
+                    self.logger.debug('Received error:\n{}'.format(traceback.format_exc()))
                 else:
                     if not response.ok:
                         self.logger.error(
