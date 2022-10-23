@@ -88,7 +88,7 @@ def parse_args():
     )
     parser.add_argument(
         '-c', '--command',
-        help='Zookeeper command to run'
+        help='Zookeeper command to run.'
     )
     return parser.parse_args()
 
@@ -97,9 +97,9 @@ class Controller(ZkClient):
     Controller for workers and watchdog.
     """
 
-    def get_worker_status(self, log = True):
+    def get_worker_status(self):
         """
-        Logs status of the workers.
+        Returns status of the workers.
         :param log: Logs worker status if True else just return dictionary
         :return: dictionary with status and queue of each worker
         :raise: ZookeeperError if server returns non-zero error code
@@ -109,45 +109,32 @@ class Controller(ZkClient):
             worker_ids = self.zk.get_children(constants.WORKER_STATUS)
             for worker in worker_ids:
                 try:
-                    worker_status = self.zk.get(constants.WORKER_STATUS_TEMPLATE.format(worker_id = worker))[0].decode()
-                    worker_queue = self.zk.get(constants.WORKER_QUEUE_TEMPLATE.format(worker_id = worker))[0].decode()
-                    if log:
-                        self.logger.info('Worker ID: {worker}, status: {status}, queue: {queue}'.format(
-                            worker = worker,
-                            status = worker_status[0].decode(),
-                            queue = worker_queue[0].decode()
-                        ))
                     workers[worker] = {
-                        'status': worker_status[0].decode(),
-                        'queue': worker_queue[0].decode()
+                        'status': self.zk.get(constants.WORKER_STATUS_TEMPLATE.format(worker_id = worker))[0].decode(),
+                        'queue': self.zk.get(constants.WORKER_QUEUE_TEMPLATE.format(worker_id = worker))[0].decode()
                     }
                 except NoNodeError:
-                    if log:
-                        self.logger.info('Worker ID: {worker}, status: {status}, queue: '.format(
-                            worker = worker,
-                            status = constants.STATUS_FAILED
-                        ))
                     workers[worker] = {
                         'status' : constants.STATUS_FAILED,
                         'queue': ''
                     }
         except NoNodeError:
-            if log:
-                self.logger.info('No workers are connected')
+            pass
         
         return workers
     
-    def get_queue_status(self):
+    def get_mq_queue_status(self):
         """
-        Get status of queues in message broker.
+        Get status of queues from message broker monnitoring.
         :raise: ZookeeperError if server returns non-zero error code
+        :raise: ConnectionError if fails to get status from MQ monitoring servers
+        :raise: ValueError if no monitoring servers are set up
         """
         response = None
         try:
             monitoring_servers = cf.server_list(self.zk.get_children(constants.WORKER_CONFIG_MQ_MONITORING_SERVERS))
         except kazoo.exceptions.NoNodeError:
-            self.logger.error('Failed to obtain monitoring server list from zookeeper!')
-            return
+            raise ValueError('No monitoring servers are set up!')
 
         if self.ca_cert:
             queue_request = 'https://{server}/api/queues'
@@ -181,17 +168,35 @@ class Controller(ZkClient):
                     break
         
         if not response or not response.ok:
-            self.logger.error('Failed to get status of queues from MQ servers!')
-            return
+            raise ConnectionError('Failed to get status of queues from MQ servers!')
         
+        return response
+    
+    def get_processing_queue_list(self):
+        """
+        Retruns list of processing queues with configuration in zookeeper.
+        :raise: ZookeeperError if server returns non-zero error code
+        """
         try:
             processing_queues = self.zk.get_children(constants.QUEUE)
         except NoNodeError:
-            self.logger.error('Failed to get list of processing queues from zookeeper!')
             processing_queues = []
+        
+        return processing_queues
 
+    def get_queue_status(self):
+        """
+        Returns status of queues in message broker.
+        :raise: ZookeeperError if server returns non-zero error code
+        :raise: ConnectionError if fails to get status from MQ monitoring servers
+        :raise: ValueError if no monitoring servers are set up
+        """
+        output = {}
+        response = self.get_mq_queue_status()  # raises ConnectionError
+
+        processing_queues = self.get_processing_queue_list()
         queue_mq_stats = json.loads(response.content)
-        workers = self.get_worker_status(log = False)
+        workers = self.get_worker_status()
 
         n_workers_on_queue = {}
         for worker in workers:
@@ -210,16 +215,15 @@ class Controller(ZkClient):
                 number_of_workers = n_workers_on_queue[queue['name']]
             
             if queue['name'] in processing_queues:
-                self.logger.info('Queue name: {name}, number of messages: {messages}, number of workers on queue: {n_workers}'.format(
-                    name = queue["name"],
-                    messages = queue["messages"],
-                    n_workers = number_of_workers
-                ))
+                output[queue['name']] = {
+                    'messages': queue["messages"],
+                    'n_workers': number_of_workers,
+                }
             else:
-                self.logger.info('Queue name: {name}, number of messages: {messages}, not a processing queue!'.format(
-                    name = queue["name"],
-                    messages = queue["messages"]
-                ))
+                output[queue['name']] = {
+                    'messages': queue["messages"]
+                }
+        return output
 
     def switch_worker(self, worker, queue):
         """
@@ -228,19 +232,21 @@ class Controller(ZkClient):
         :param worker: worker id
         :param queue: queue to switch to
         :raise: ZookeeperError if server returns non-zero error code
+        :raise: ValueError if wrong worker or queue is specified
         """
         try:
             worker_ids = self.zk.get_children(constants.WORKER_STATUS)
         except NoNodeError:
-            self.logger.info('No workers are connected')
-            return
+            raise ValueError('No workers are connected')
         
         if worker not in worker_ids:
-            self.logger.error('Worker with id {} does not exist!'.format(worker))
-            return
+            raise ValueError(f'Worker with id {worker} does not exist!')
         
         # TODO
         # Add queue name validation
+        processing_queues = self.get_processing_queue_list()
+        if queue not in processing_queues:
+            raise ValueError(f'Queue {queue} does not exist or isn\'t processing queue!')
 
         self.zk.set(constants.WORKER_QUEUE_TEMPLATE.format(worker_id = worker), queue.encode('utf-8'))
 
@@ -250,16 +256,15 @@ class Controller(ZkClient):
         :param zk: zookeeper connection
         :param worker: worker id
         :raise: ZookeeperError if server returns non-zero error code
+        :raise: ValueError if wrong worker is specified
         """
         try:
             worker_ids = self.zk.get_children(constants.WORKER_STATUS)
         except NoNodeError:
-            self.logger.info('No workers are connected')
-            return
+            raise ValueError('No workers are connected')
         
         if worker not in worker_ids:
-            self.logger.error('worker with id {} does not exist!'.format(worker))
-            return
+            raise ValueError(f'worker with id {worker} does not exist!')
         
         self.zk.set(constants.WORKER_ENABLED_TEMPLATE.format(worker_id = worker), 'false'.encode('utf-8'))
 
@@ -269,16 +274,15 @@ class Controller(ZkClient):
         :param zk: zookeeper connection
         :param worker: worker id
         :raise: ZookeeperError if zookeeper server returns non-zero error code
+        :raise: ValueError if wrong worker is specified
         """
         try:
             worker_ids = self.zk.get_children(constants.WORKER_STATUS)
         except NoNodeError:
-            self.logger.info('No workers are connected')
-            return
+            raise ValueError('No workers are connected')
         
         if worker not in worker_ids:
-            self.logger.error('Worker with id {} does not exist!'.format(worker))
-            return
+            raise ValueError(f'worker with id {worker} does not exist!')
         
         self.zk.delete(constants.WORKER_STATUS_ID_TEMPLATE.format(worker_id = worker), recursive=True)
 
@@ -298,22 +302,6 @@ def main():
         logger=logger
     )
     controller.zk_connect()
-
-    # get worker status
-    if args.status:
-        try:
-            controller.get_worker_status()
-        except ZookeeperError as e:
-            logger.error('Failed to get status of the workers!')
-            logger.error('Received error message: {}'.format(e))
-    
-    # get queue status
-    if args.queues:
-        try:
-            controller.get_queue_status()
-        except Exception as e:
-            logger.error('Failed to get status of queues!')
-            logger.error('Received error message: {}'.format(e))
 
     # switch worker to different queue
     if args.switch:
@@ -349,6 +337,38 @@ def main():
                 logger.error('Failed to remove worker {} from zookeeper!'.format(args.remove))
                 logger.error('Received error message: {}'.format(e))
                 #traceback.print_exc()
+
+    # get worker status
+    if args.status:
+        try:
+            worker_status = controller.get_worker_status()
+        except ZookeeperError as e:
+            logger.error('Failed to get status of the workers!')
+            logger.error('Received error message: {}'.format(e))
+        else:
+            if not worker_status:
+                logger.info('No workers are connected')
+            for worker in worker_status:
+                logger.info('Worker ID: {worker}, status: {status}, queue: {queue}'.format(
+                    worker = worker,
+                    status = worker_status[worker]['status'],
+                    queue = worker_status[worker]['queue']
+                ))
+    
+    # get queue status
+    if args.queues:
+        try:
+            queue_status = controller.get_queue_status()
+        except Exception as e:
+            logger.error('Failed to get status of queues!')
+            logger.error('Received error message: {}'.format(e))
+        else:
+            for queue in queue_status:
+                logger.info('Queue name: {name}, number of messages: {messages}, number of workers on queue: {n_workers}'.format(
+                    name = queue,
+                    messages = queue_status[queue]['messages'],
+                    n_workers = queue_status[queue]['n_workers'] if 'n_workers' in queue_status[queue] else 'not a processing queue!'
+                ))
     
     return 0
 
