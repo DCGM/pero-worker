@@ -27,6 +27,7 @@ import cv2
 import pickle
 import magic
 import numpy as np
+import torch
 
 # pero OCR
 from pero_ocr.document_ocr.layout import PageLayout
@@ -179,6 +180,7 @@ class Worker(object):
 
         # configuration for the page parser and selected orc
         self.config = None
+        self.config_version = None
         self.ocr_path = None
         self.page_parser = None
 
@@ -399,6 +401,7 @@ class Worker(object):
             )
             self.logger.error('Received error:\n{}'.format(traceback.format_exc()))
         else:
+            self.logger.debug('Queue config version: {}'.format(self.config_version))
             self.update_status(constants.STATUS_IDLE)
             # start processing of new queue
             self.mq_channel_create(self.mq_connection)
@@ -775,6 +778,7 @@ class Worker(object):
         log = processing_request.logs.add()
         log.host_id = self.worker_id
         log.stage = processing_request.processing_stages[0]
+        log.version = self.config_version
         log.status = 'Failed'
         Timestamp.FromDatetime(log.start, start_time)
 
@@ -1024,6 +1028,9 @@ class Worker(object):
         Loads ocr for stage given by name
         :param name: name of config/queue of the stage
         """
+        # clear current ocr from gpu cache
+        torch.cuda.empty_cache()
+
         # create ocr directory
         self.ocr_path = os.path.join(self.tmp_directory, name)
         if os.path.exists(self.ocr_path):
@@ -1036,6 +1043,7 @@ class Worker(object):
         # get config from zookeeper and save to file
         try:
             config_content = self.zk.get(constants.QUEUE_CONFIG_TEMPLATE.format(queue_name=name))[0].decode('utf-8')
+            config_version = self.zk.get(constants.QUEUE_CONFIG_VERSION_TEMPLATE.format(queue_name=name))[0].decode('utf-8')
         except (kazoo.exceptions.NoNodeError, kazoo.exceptions.ZookeeperError) as e:
             self.update_status(constants.STATUS_FAILED)
             self.logger.error('Failed to get configuration for queue {}'.format(name))
@@ -1046,6 +1054,7 @@ class Worker(object):
         # load config
         self.config = configparser.ConfigParser()
         self.config.read(config_file_name)
+        self.config_version = config_version
 
         try:
             dummy = self.config['WORKER']['DUMMY']
