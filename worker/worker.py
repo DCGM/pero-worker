@@ -1015,28 +1015,29 @@ class Worker(object):
         Unpacks tar or zip archive
         :param archive: path to archive to unpack
         :param path: path where archive will be unpacked to
+        :raise tarfile.TarError if Attempted Path Traversal in Tar File is detected
+        :raise tarfile.TarError if tar file can't be read
+        :raise OSError: if fails to write to filesystem
+        :raise zpirfile.BadZipfile: if zipfile can't be read
         """
+        def is_within_directory(directory, target):
+            abs_directory = os.path.abspath(directory)
+            abs_target = os.path.abspath(target)
+
+            prefix = os.path.commonprefix([abs_directory, abs_target])
+
+            return prefix == abs_directory
+        
+        def safe_extract(tar, path=".", members=None, *, numeric_owner=False):
+            for member in tar.getmembers():
+                member_path = os.path.join(path, member.name)
+                if not is_within_directory(path, member_path):
+                    raise tarfile.TarError("Attempted Path Traversal in Tar File")
+
+            tar.extractall(path, members, numeric_owner=numeric_owner)
+        
         if tarfile.is_tarfile(archive):
             with tarfile.open(archive, 'r') as arch:
-                def is_within_directory(directory, target):
-                    
-                    abs_directory = os.path.abspath(directory)
-                    abs_target = os.path.abspath(target)
-                
-                    prefix = os.path.commonprefix([abs_directory, abs_target])
-                    
-                    return prefix == abs_directory
-                
-                def safe_extract(tar, path=".", members=None, *, numeric_owner=False):
-                
-                    for member in tar.getmembers():
-                        member_path = os.path.join(path, member.name)
-                        if not is_within_directory(path, member_path):
-                            raise Exception("Attempted Path Traversal in Tar File")
-                
-                    tar.extractall(path, members, numeric_owner=numeric_owner) 
-                    
-                
                 safe_extract(arch, path)
         else:
             with zipfile.ZipFile(archive, 'r') as arch:
