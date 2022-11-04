@@ -8,6 +8,7 @@ import logging
 import traceback
 import requests
 import json
+import time
 
 # aux functions
 import worker_functions.connection_aux_functions as cf

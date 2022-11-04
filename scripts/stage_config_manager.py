@@ -7,6 +7,7 @@ import os
 import logging
 import argparse
 import datetime
+import time
 
 # worker libraries
 import worker_functions.connection_aux_functions as cf
