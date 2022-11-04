@@ -28,6 +28,9 @@ from google.protobuf.timestamp_pb2 import Timestamp
 # setup logging (required by kazoo)
 log_formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
 
+# use UTC time in log
+log_formatter.converter = time.gmtime
+
 stderr_handler = logging.StreamHandler()
 stderr_handler.setFormatter(log_formatter)
 

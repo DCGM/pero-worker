@@ -28,6 +28,9 @@ import worker_functions.connection_aux_functions as cf
 # setup logging (required by kazoo)
 log_formatter = logging.Formatter('%(asctime)s WATCHDOG %(levelname)s %(message)s')
 
+# use UTC time in log
+log_formatter.converter = time.gmtime
+
 stderr_handler = logging.StreamHandler()
 stderr_handler.setFormatter(log_formatter)
 
