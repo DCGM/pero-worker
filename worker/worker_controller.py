@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-# Worker manager for coordination and configuration
+# Worker controller for coordination and configuration
 
 import sys
 import os
@@ -49,9 +49,9 @@ logger.setLevel(logging.DEBUG)
 logger.addHandler(stderr_handler)
 logger.propagate = False
 
-class WorkerManager(ZkClient):
+class WorkerController(ZkClient):
     """
-    Worker Manager - manages configuration and performes coordination of processing.
+    Worker controller - manages configuration and performes coordination of processing.
     Uses Apache Zookeeper for coordiantion.
     """
     def __init__(
@@ -65,7 +65,7 @@ class WorkerManager(ZkClient):
         logger=logging.getLogger(__name__)
     ):
         """
-        Initializes worker manager
+        Initializes worker controller
         :param zookeeper_servers: list of zookeeper servers
         :param username: username for authentication with zookeeper servers
         :param password: password for authentication with zookeeper servers
@@ -94,6 +94,7 @@ class WorkerManager(ZkClient):
         # synchronization
         self.switch_stage_lock = threading.Lock()
         self.stage_config_version = -1  # version of zookeeper node containing stage config
+        self.init_complete = False  # indicates if worker already registered itself in zookeeper
         # zookeeper locks
         self.stage_stats_lock = None  # lock for updating statistics about current queue
     
@@ -148,36 +149,66 @@ class WorkerManager(ZkClient):
         sftp.sftp_connect()
         return sftp
     
+    def init_zookeeper_connection_status(self):
+        """
+        Creates ephemeral node in zookeeper indicating that worker is connected.
+        """
+        self.zk.create(
+            constants.WORKER_STATUS_CONNECTED_TEMPLATE.format(worker_id = self.worker_id),
+            'true'.encode('utf-8'),
+            ephemeral = True  # ZK automaticaly deletes node when worker disconnects
+        )
+
     def init_worker_status(self):
         """
         Initializes state of worker in zookeeper
         :raise: NodeExistsError if worker with this id is already defined in zookeeper
         :raise: ZookeeperError if server returns non zero value
+        :raise: ValueError if worker id is duplicate
         """
-        # TODO
-        # catch errors
-        # change create to ensure path
+        if self.worker_id:
+            if self.zk.exists(
+                constants.WORKER_STATUS_ID_TEMPLATE.format(worker_id = self.worker_id)
+                )\
+                and\
+                self.zk.exists(
+                constants.WORKER_STATUS_CONNECTED_TEMPLATE.format(worker_id = self.worker_id)
+                ):
+                    raise ValueError(f'Worker ID {self.worker_id} is duplicate to other worker!')
+        else:
+            self.worker_id = uuid.uuid4().hex
+            while self.zk.exists(
+                constants.WORKER_STATUS_ID_TEMPLATE.format(worker_id = self.worker_id)
+                ):
+                    self.worker_id = uuid.uuid4().hex
 
-        # set worker status
-        self.zk.create(
-            constants.WORKER_STATUS_TEMPLATE.format(
-                worker_id = self.worker_id
-            ),
-            self.status.encode('utf-8'),
-            makepath=True
+        # set worker initial status
+        self.zk.ensure_path(
+            constants.WORKER_STATUS_TEMPLATE.format(worker_id = self.worker_id),
+            self.status.encode('utf-8')
         )
-        # initialize worker queue path
-        self.zk.create(constants.WORKER_QUEUE_TEMPLATE.format(
-            worker_id = self.worker_id
-        ))
+        self.zk.ensure_path(
+            constants.WORKER_QUEUE_TEMPLATE.format(worker_id = self.worker_id)
+        )
         # set worker to enabled state
-        self.zk.create(constants.WORKER_ENABLED_TEMPLATE.format(
-            worker_id = self.worker_id
-        ), 'true'.encode('utf-8'))
-        # initialize worker unlock time path
-        self.zk.create(constants.WORKER_UNLOCK_TIME.format(
-            worker_id = self.worker_id
-        ))
+        self.zk.ensure_path(
+            constants.WORKER_ENABLED_TEMPLATE.format(worker_id = self.worker_id),
+            'true'.encode('utf-8')
+        )
+        self.zk.ensure_path(
+            constants.WORKER_UNLOCK_TIME.format(worker_id = self.worker_id)
+        )
+        self.init_zookeeper_connection_status()
+        self.init_complete = True
+    
+    def connection_state_listener(self, state):
+        """
+        Handles reconnection to zookeeper state changes.
+        :param state: zookeeper state passed in when connection event occures
+        """
+        if state == KazooState.CONNECTED:
+            if self.worker_id and self.init_complete:
+                self.init_zookeeper_connection_status()
     
     def set_mq_server_list(self, servers):
         """
@@ -284,11 +315,6 @@ class WorkerManager(ZkClient):
             self.logger.critical('Failed to connect to zookeeper!')
             self.logger.critical('Initialization aboarded!')
             return 1
-        
-        # generate id
-        if not self.worker_id:
-            self.gen_id()
-        self.logger.info('Worker id: {}'.format(self.worker_id))
 
         # initialize worker status and sync with zookeeper
         try:            
@@ -297,6 +323,8 @@ class WorkerManager(ZkClient):
             self.logger.critical('Failed to register worker in zookeeper!')
             self.logger.critical('Received error:\n{}'.format(traceback.format_exc()))
             return 1
+        
+        self.logger.info('Worker id: {}'.format(self.worker_id))
         
         # setup tmp directory
         if not self.tmp_directory:
@@ -337,6 +365,8 @@ class WorkerManager(ZkClient):
             path=constants.WORKER_ENABLED_TEMPLATE.format(worker_id=self.worker_id),
             func=self.zk_callback_shutdown
         )
+        # connection listener
+        self.zk.add_listener(self.connection_state_listener)
 
         if self.queue:
             self.update_status(constants.STATUS_PROCESSING)

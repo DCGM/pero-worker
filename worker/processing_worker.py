@@ -38,10 +38,10 @@ class ProcessingWorker(MQClient):
     Worker for request processing.
     Processes requests received from MQ queue and submits results back to MQ.
     """
-    def __init__(self, manager = None, mq_servers = [], username = '', password = '', ca_cert = None, logger = logging.getLogger(__name__)):
+    def __init__(self, controller = None, mq_servers = [], username = '', password = '', ca_cert = None, logger = logging.getLogger(__name__)):
         """
         Initializes worker.
-        :param manager: manager object where to report status and get up to date parameters
+        :param controller: controller object where to report status and get up to date parameters
         :param mq_servers: list of MQ servers to connect to
         :param username: username for MQ server authentication
         :param password: password for MQ server authentication
@@ -57,8 +57,8 @@ class ProcessingWorker(MQClient):
             logger = logger
         )
 
-        # set manager object
-        self.manager = manager
+        # set controller object
+        self.controller = controller
 
         # TODO
         # move this to separate object for request processing
@@ -87,21 +87,21 @@ class ProcessingWorker(MQClient):
     def get_mq_servers(self):
         """
         Returns current list of MQ servers.
-        List is taken from manager object if it present, otherwise self.mq_servers is used
+        List is taken from controller object if it present, otherwise self.mq_servers is used
         :return: list of MQ servers
         """
-        if self.manager:
-            return self.manager.get_mq_servers()
+        if self.controller:
+            return self.controller.get_mq_servers()
         else:
             return self.mq_servers
     
     def report_status(self, status):
         """
-        Report status change to manager object.
+        Report status change to controller object.
         :param status: current status (taken from constants.STATUS_*)
         """
-        if self.manager:
-            self.manager.report_status(status)
+        if self.controller:
+            self.controller.report_status(status)
     
     def report_statistics(stage, processed_request_count, total_processing_time):
         """
@@ -110,15 +110,15 @@ class ProcessingWorker(MQClient):
         :param processed_request_count: number of reqeusts processed
         :param total_processing_time: total time spent on processing processed requests
         """
-        if self.manager:
-            self.manager.report_statistics(stage, processed_request_count, total_processing_time)
+        if self.controller:
+            self.controller.report_statistics(stage, processed_request_count, total_processing_time)
     
     def processing_enabled(self):
         """
-        Check if processing was enabled / disabled by manager.
+        Check if processing was enabled / disabled by controller.
         """
-        if self.manager:
-            return self.manager.processing_enabled()
+        if self.controller:
+            return self.controller.processing_enabled()
         else:
             return True
     
