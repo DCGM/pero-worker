@@ -2,10 +2,10 @@
 
 # Processor for request processing
 
-import sys
 import os
 import logging
-import time
+import time  # dummy processing
+import random  # dummy processing
 import datetime
 from abc import ABC, abstractmethod
 
