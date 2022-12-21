@@ -23,6 +23,7 @@ import worker_functions.constants as constants
 import worker_functions.connection_aux_functions as cf
 from worker_functions.sftp_client import SFTP_Client
 from worker_functions.zk_client import ZkClient
+from cache import OCRFileCache
 
 # abstract class def
 from abc import ABC, abstractmethod
@@ -104,7 +105,7 @@ class ZkWorkerController(WorkerController, ZkClient):
         password='',
         ca_cert=None,
         worker_id=None,
-        tmp_directory=None,
+        cache_dir=None,
         logger=logging.getLogger(__name__)
     ):
         """
@@ -114,7 +115,7 @@ class ZkWorkerController(WorkerController, ZkClient):
         :param password: password for authentication with zookeeper servers
         :param ca_cert: path to CA certificate to verify SSL/TLS connection
         :param worker_id: worker identifier for identification in zookeeper
-        :param tmp_directory: path to directory where temporary files will be stored
+        :param cache_dir: path to directory where OCR files will be stored
         :param logger: logger instance to use for logging
         """
 
@@ -129,7 +130,8 @@ class ZkWorkerController(WorkerController, ZkClient):
 
         # worker config
         self.worker_id = worker_id
-        self.tmp_directory = tmp_directory
+        self.cache_dir = cache_dir if cache_dir else '/tmp'
+        self.ocr_file_cache = None
 
         # stage cofig
         self.stage = ''
@@ -139,50 +141,9 @@ class ZkWorkerController(WorkerController, ZkClient):
         self.switch_stage_lock = threading.Lock()
         self.enabled_lock = threading.Lock()
         self.stage_config_version = -1  # version of zookeeper node containing stage config
-        self.init_complete = False  # indicates if worker already registered itself in zookeeper
+        self.init_complete = False  # indicates if worker has already registered itself in zookeeper
         # zookeeper locks
         self.stage_stats_lock = None  # lock for updating statistics about current queue
-    
-    def create_tmp_dir(self):
-        """
-        Creates tmp directory
-        """
-        if not self.tmp_directory:
-            return
-        
-        if os.path.isdir(self.tmp_directory):
-            return
-        
-        os.makedirs(self.tmp_directory)
-    
-    def clean_tmp_files(self, path=None):
-        """
-        Removes temporary files and directories recursively
-        :param path: path to file/directory to clean up
-        """
-        # default path = temp directory
-        if not path:
-            path = self.tmp_directory
-        
-        # if temp directory is not set - nothing to clean
-        if not path:
-            return
-        
-        # path is not valid
-        if not os.path.exists(path):
-            return
-        
-        # remove temp file
-        if os.path.isfile(path):
-            os.unlink(path)
-            return
-        
-        # clean files from temp directory
-        for file_name in os.listdir(path):
-            self.clean_tmp_files(os.path.join(path, file_name))
-        
-        # remove temp directory
-        os.rmdir(path)
     
     def sftp_connect(self):
         """
@@ -462,6 +423,13 @@ class ZkWorkerController(WorkerController, ZkClient):
         """
         Start the worker
         """
+        # Create persistent cache if worker id is persistent
+        if self.worker_id:
+            self.ocr_file_cache = OCRFileCache(
+                cache_dir=os.path.join(f'{self.cache_dir}', f'pero-worker-{self.worker_id}'),
+                auto_cleanup=False
+            )
+        
         # connect to the zookeeper
         try:
             self.zk_connect()
@@ -479,11 +447,13 @@ class ZkWorkerController(WorkerController, ZkClient):
             return 1
         
         self.logger.info('Worker id: {}'.format(self.worker_id))
-        
-        # setup tmp directory
-        if not self.tmp_directory:
-            self.tmp_directory = f'/tmp/pero-worker-{self.worker_id}'
-        self.create_tmp_dir()
+
+        # create auto-removable cache if worker id is auto-generated
+        if not self.ocr_file_cache:
+            self.ocr_file_cache = OCRFileCache(
+                cache_dir=os.path.join(f'{self.cache_dir}', f'pero-worker-{self.worker_id}'),
+                auto_cleanup=True
+            )
 
         # get MQ and FTP server list before connecting to MQ
         try:
