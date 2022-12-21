@@ -211,19 +211,6 @@ class DummyRequestProcessor(RequestProcessor):
     """
     Dummy request processor for simulation of processing.
     """
-    def __init__(self, stage, config, config_path, config_version, logger = logging.getLogger(__name__)):
-        """
-        :param stage: processing stage name
-        :param config: processing configuration
-        :param config_path: processing configuration and model path
-        :param config_version: version of processing configuration
-        :param logger: logger to use for logging
-        """
-        self.stage = stage
-        self.config = config
-        self.config_version = config_version
-        self.logger = logger
-    
     def _process_request_data(self, processing_request):
         """
         Simulates processing on given request.
