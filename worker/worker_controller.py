@@ -2,14 +2,11 @@
 
 # Worker controller for coordination and configuration
 
-import sys
 import os
 import logging
 import time
-import datetime
 import uuid
 import traceback
-import configparser
 import threading
 
 # zookeeper
@@ -24,6 +21,8 @@ import worker_functions.connection_aux_functions as cf
 from worker_functions.sftp_client import SFTP_Client
 from worker_functions.zk_client import ZkClient
 from cache import OCRFileCache
+from processing_worker import ProcessingWorker
+from request_processor import get_request_processor
 
 # abstract class def
 from abc import ABC, abstractmethod
@@ -49,7 +48,7 @@ class WorkerController(ABC):
     Worker controller - manages configuration and performes coordination of processing.
     """
 
-    self.worekr_id = None
+    self.worker_id = None
     self.enabled = False
 
     @abstractmethod
@@ -105,7 +104,7 @@ class ZkWorkerController(WorkerController, ZkClient):
         password='',
         ca_cert=None,
         worker_id=None,
-        cache_dir=None,
+        cache_dir='/tmp',
         logger=logging.getLogger(__name__)
     ):
         """
@@ -128,22 +127,34 @@ class ZkWorkerController(WorkerController, ZkClient):
             logger = logger
         )
 
+        # auth config
+        self.username = username
+        self.password = password
+        self.ca_cert = ca_cert
+
         # worker config
         self.worker_id = worker_id
-        self.cache_dir = cache_dir if cache_dir else '/tmp'
+        self.cache_dir = cache_dir
         self.ocr_file_cache = None
+        self.status = constants.STATUS_STARTING
 
         # stage cofig
-        self.stage = ''
+        self.request_processor = None
+        self.processing_worker = None
+
+        # threads
+        self.processing_thread = None
 
         # synchronization
         self.status_lock = threading.Lock()
         self.switch_stage_lock = threading.Lock()
         self.enabled_lock = threading.Lock()
-        self.stage_config_version = -1  # version of zookeeper node containing stage config
+        self.shutdown_lock = threading.Lock()
+        self.stage_node_version = -1  # version of zookeeper node containing current stage
         self.init_complete = False  # indicates if worker has already registered itself in zookeeper
+        self.shutdown = False  # flag for remote shutdown call
         # zookeeper locks
-        self.stage_stats_lock = None  # lock for updating statistics about current queue
+        self.stage_stats_locks = {}  # locks for updating statistics for given stage
     
     def sftp_connect(self):
         """
@@ -155,12 +166,22 @@ class ZkWorkerController(WorkerController, ZkClient):
         sftp.sftp_connect()
         return sftp
     
+    def get_status(self):
+        """
+        Get current status.
+        :return: self.status
+        """
+        self.status_lock.acquire()
+        status = self.status
+        self.status_lock.release()
+        return status
+    
     def update_status(self, status):
         """
         Updates worker status
         :param status: new status
-        :raise: NoNodeError if status node path is not initialized
-        :raise: ZookeeperError if server returns non zero value
+        :raise NoNodeError if status node path is not initialized
+        :raise ZookeeperError if server returns non zero value
         """
         self.status_lock.acquire()
         self.status = status
@@ -192,9 +213,9 @@ class ZkWorkerController(WorkerController, ZkClient):
     def init_worker_status(self):
         """
         Initializes state of worker in zookeeper
-        :raise: NodeExistsError if worker with this id is already defined in zookeeper
-        :raise: ZookeeperError if server returns non zero value
-        :raise: ValueError if worker id is duplicate
+        :raise NodeExistsError if worker with this id is already defined in zookeeper
+        :raise ZookeeperError if server returns non zero value
+        :raise ValueError if worker id is duplicate
         """
         if self.worker_id:
             if self.zk.exists(
@@ -246,6 +267,16 @@ class ZkWorkerController(WorkerController, ZkClient):
         self.enabled_lock.acquire()
         self.enabled = True
         self.enabled_lock.release()
+    
+    def processing_enabled(self):
+        """
+        Returns if processing is currently enabled.
+        :return: bool True if processing is enabled, false otherwise
+        """
+        self.enabled_lock.acquire()
+        enabled = self.enabled
+        self.enabled_lock.release()
+        return enabled
 
     def connection_state_listener(self, state):
         """
@@ -281,18 +312,28 @@ class ZkWorkerController(WorkerController, ZkClient):
         :param status: new zookeeper node status
         :param args: additional arguments (like event)
         """
+        # enabled indicates if worker is enabled, not just processing
         enabled = data.decode('utf-8').lower()
         if enabled != 'true':
             self.logger.info('Shutdown signal received!')
-            self.disable_processing()
-            self.update_status(constants.STATUS_DEAD)
-            # TODO
-            # add processing worker shutdown and queue logger shutdown
-            # add main thread release / send signal to main thread to shutdown
+            self.shutdown_lock.acquire()
+            self.shutdown = True
+            self.shutdown_lock.release()
     
-    def update_stage_statistics(self, processed_request_count, total_processing_time):
+    def shutdown_received(self):
+        """
+        Returns if worker has received shutdown command.
+        :return: bool True if worker received remote shutdown call else False
+        """
+        self.shutdown_lock.acquire()
+        shutdown = self.shutdown
+        self.shutdown_lock.release()
+        return shutdown
+    
+    def update_stage_statistics(self, stage, processed_request_count, total_processing_time):
         """
         Updates statistics for current stage.
+        :param stage: stage name
         :param processed_request_count: number of processed requests
         :param total_processing_time: total processing time for given number of processed requests
         """
@@ -300,24 +341,24 @@ class ZkWorkerController(WorkerController, ZkClient):
             return
         
         avg_msg_time = total_processing_time / processed_request_count
-        self.logger.debug(f'Updating stage statistics for stage {self.stage}')
+        self.logger.debug(f'Updating stage statistics for stage {stage}')
 
         # Zookeeper lock deadlock workaround
         # retries to acquire the lock when first acquisition fails
         retry = 2
         while True:
             try:
-                self.stage_stats_lock.acquire(timeout = 20)
+                self.stage_stats_locks[stage].acquire(timeout = 20)
             except kazoo.exceptions.LockTimeout:
-                self.logger.warning(f'Failed to acquire lock for time statistics for stage {self.stage}!')
+                self.logger.warning(f'Failed to acquire lock for time statistics for stage {stage}!')
                 retry -= 1
                 if retry <= 0:
-                    self.logger.error(f'Failed to update statistics for stage {self.stage}!')
+                    self.logger.error(f'Failed to update statistics for stage {stage}!')
                     return
                 else:
                     self.logger.info(f'Trying to acquire lock again')
             except Exception:
-                self.logger.error(f'Failed to update statistics for stage {self.stage}!')
+                self.logger.error(f'Failed to update statistics for stage {stage}!')
                 self.logger.error(f'Received error:\n{traceback.format_exc()}')
                 return
             else:
@@ -327,7 +368,7 @@ class ZkWorkerController(WorkerController, ZkClient):
             # get average processing time from zookeeper
             zk_msg_time = self.zk.get(
                 constants.QUEUE_STATS_AVG_MSG_TIME_TEMPLATE
-                .format(queue = self.stage)
+                .format(queue_name = stage)
             )[0].decode('utf-8')
 
             # calculate new stage average processing time
@@ -337,28 +378,102 @@ class ZkWorkerController(WorkerController, ZkClient):
             
             # update statistics in zookeeper
             self.zk.set(
-                path=constants.QUEUE_STATS_AVG_MSG_TIME_TEMPLATE.format(queue=self.stage),
+                path=constants.QUEUE_STATS_AVG_MSG_TIME_TEMPLATE.format(queue_name=stage),
                 value=float(avg_msg_time).hex().encode('utf-8')
             )
         except kazoo.exceptions.ZookeeperError:
             self.logger.error(
-                f'Failed to update average processing time for stage {self.stage} due to zookeeper error!'
+                f'Failed to update average processing time for stage {stage} due to zookeeper error!'
             )
-            self.logger.error(f'Received error:\n{traceback.format_exc()}')
+            self.logger.debug(f'Received error:\n{traceback.format_exc()}')
         except ValueError:
             self.logger.error(
-                f'Failed to update average processing time for stage {self.stage} due to wrong number format in zookeeper!'
+                f'Failed to update average processing time for stage {stage} due to wrong number format in zookeeper!'
             )
         except Exception:
             self.logger.error(
-                f'Failed to update average processing time for stage {self.stage} due to unknown error!'
+                f'Failed to update average processing time for stage {stage} due to unknown error!'
             )
             self.logger.error(f'Received error:\n{traceback.format_exc()}')
         else:
-            self.logger.debug('Statistics updated!')
+            self.logger.info(f'Statistics for stage {stage} updated!')
         finally:
-            self.stage_stats_lock.release()
+            self.stage_stats_locks[stage].release()
     
+    def start_processing(self):
+        """
+        Runs processing with current configuration.
+        """
+        if self.processing_thread:
+            if self.processing_thread.is_alive():
+                self.disable_processing()
+            self.processing_thread.join()
+
+        self.processing_thread = threading.Thread(
+            target=self.processing_worker.run,
+            args=[self.request_processor]
+        )
+        self.enable_processing()
+        self.processing_thread.start()
+    
+    def re_run_processing(self):
+        """
+        Runs processing with current configuration again.
+        """
+        if self.processing_enabled():
+            if not self.processing_thread.is_alive():
+                self.start_processing()
+        else:
+            self.start_processing()
+    
+    def add_stage_to_cache(self, stage, version):
+        """
+        Adds stage configuration and ocr model to cache.
+        :param stage: stage name
+        :param version: stage version
+        :raise kazoo.exceptions.ZookeeperError if fails to get configuration from zookeeper
+        :raise ConnectionError if fails to connect to sftp servers
+        """
+        config = zk.get(constants.QUEUE_CONFIG_TEMPLATE.format(queue_name=stage))[0].decode('utf-8')
+        try:
+            ftp_path = zk.get(constants.QUEUE_CONFIG_PATH_TEMPLATE.format(queue_name=stage))[0].decode('utf-8')
+        except kazoo.exceptions.NoNodeError:
+            # model not required (dummy configuration)
+            ftp_path = ''
+        
+        # raises OSError and some others related to filesystem and connection operations
+        self.ocr_file_cache.add_stage(
+            stage=stage,
+            config=config,
+            version=version,
+            sftp_path=ftp_path,
+            sftp_client=self.sftp_connect() if ftp_path else None
+        )
+
+    def configure_processing(self, stage, version):
+        """
+        Configures processing for given stage.
+        :param stage: stage name
+        :param version: stage version
+        """
+        try:
+            current_version = self.ocr_file_cache.get_stage_version(stage)
+        except ValueError:
+            # stage not in cache
+            current_version = ''
+        
+        if version != current_version or version == '':
+            # raises ConnectionErrors, OSErrors, ...
+            self.add_stage_to_cache(stage, version)
+        
+        self.request_processor = get_request_processor(
+            stage=stage,
+            config=self.ocr_file_cache.get_stage_config(stage),
+            config_path=self.ocr_file_cache.get_stage_data_path(stage),
+            config_version=version,
+            logger=self.logger  # TODO - change to processing specific logger
+        )
+
     def zk_callback_switch_stage(self, data, status, *args):
         """
         Zookeeper callback reacting to notification to switch stage
@@ -372,57 +487,95 @@ class ZkWorkerController(WorkerController, ZkClient):
         # prevent multiple callbacks to switch stage at once
         self.switch_stage_lock.acquire()
 
-        # check if stage wasn't switched again during waiting
-        if self.stage_config_version >= status.version:
+        # if worker is shuting down, do not change state
+        if self.shutdown_received():
             self.switch_stage_lock.release()
             return
-        self.stage_config_version = status.version
+
+        # check if stage wasn't switched again during waiting
+        if self.stage_node_version >= status.version:
+            self.switch_stage_lock.release()
+            return
+        
+        self.stage_node_version = status.version
+
+        # Load stage version
+        try:
+            stage_version = self.zk.get(
+                    constants.QUEUE_CONFIG_VERSION_TEMPLATE
+                    .format(queue_name = stage)
+                )[0].decode('utf-8')
+        except kazoo.exceptions.ZookeeperError:
+            self.update_status(constants.STATUS_CONFIGURATION_FAILED)
+            self.logger.warning(
+                f'Failed to get version of stage {stage} configuration from zookeeper!'
+            )
+            stage_version = ''
 
         # check if there is something to do
-        if stage == self.stage:
-            self.switch_stage_lock.release()
-            return
+        if self.request_processor and stage_version \
+            and stage == self.request_processor.stage \
+            and stage_version == self.request_processor.config_version:
+                self.logger.info(f'Running processing for stage {self.request_processor.stage} again')
+                self.re_run_processing()
+                self.switch_stage_lock.release()
+                return
         
         self.update_status(constants.STATUS_CONFIGURING)
-        self.disable_processing()
-
         self.logger.info(f'Switching stage to {stage}')
-        self.stage = stage
         
-        # get lock for given stage statistic from the zookeeper
-        try:
-            self.stage_stats_lock = self.zk.Lock(
-                constants.QUEUE_STATS_AVG_MSG_TIME_LOCK_TEMPLATE.format(queue_name = self.queue),
-                identifier=self.worker_id
-            )
-        except Exception:  # kazoo.exceptions.ZookeeperError
-            self.update_status(constants.STATUS_FAILED)
-            self.logger.error(
-                'Failed to switch stage to {}, could not get lock for average message time statistics!'
-                .format(self.stage)
-            )
-            self.logger.error('Received error:\n{}'.format(traceback.format_exc()))
-            return
+        # remove locks for unused stages
+        # (keep current stage lock for updating statistics when processing finish)
+        for key in list(self.stage_stats_locks.keys()):
+            if key != self.request_processor.stage:
+                self.stage_stats_locks.pop(key)
+
+        # add lock for new stage
+        if not self.request_processor or stage != self.request_processor.stage:
+            try:
+                self.stage_stats_locks[stage] = self.zk.Lock(
+                    constants.QUEUE_STATS_AVG_MSG_TIME_LOCK_TEMPLATE.format(queue_name = queue),
+                    identifier=self.worker_id
+                )
+            except kazoo.exceptions.ZookeeperError:
+                self.update_status(constants.STATUS_CONFIGURATION_FAILED)
+                self.logger.error(
+                    f'Failed to switch stage to {stage}, could not get lock for average message time statistics!'
+                )
+                self.logger.debug(f'Received error:\n{traceback.format_exc()}')
+                self.switch_stage_lock.release()
+                return
         
-        # TODO
+        self.disable_processing()
+        
         # load OCR model and config
         try:
-            self.configure_ocr(stage)
+            self.configure_processing(stage, stage_version)
+        except KeyboardInterrupt:
+            self.switch_stage_lock.release()
+            raise
         except Exception as e:
             self.logger.error(f'Failed to get configuration for processing stage {stage}!')
-            self.logger.debug('Received error:\n{}'.format(traceback.format_exc()))
+            self.logger.debug(f'Received error:\n{traceback.format_exc()}')
             self.update_status(constants.STATUS_CONFIGURATION_FAILED)
+            self.logger.error('Removing stage configuration from local cache!')
+            self.ocr_file_cache.remove_stage(stage)
+            self.switch_stage_lock.release()
             return
         
         self.logger.info(f'Stage switched to {stage}')
         self.update_status(constants.STATUS_IDLE)
         # start processing new stage
-        self.start_processing(stage)
+        self.start_processing()
+        self.switch_stage_lock.release()
     
     def run(self):
         """
         Start the worker
         """
+        # prevent stage switching during startup
+        self.switch_stage_lock.acquire()
+
         # Create persistent cache if worker id is persistent
         if self.worker_id:
             self.ocr_file_cache = OCRFileCache(
@@ -495,14 +648,44 @@ class ZkWorkerController(WorkerController, ZkClient):
         # TODO
         # add logging to MQ
 
-        if self.queue:
-            self.update_status(constants.STATUS_PROCESSING)
-        else:
-            self.update_status(constants.STATUS_IDLE)
+        # init processing worker
+        self.processing_worker = ProcessingWorker(
+            controller=self,
+            username=self.username,
+            password=self.password,
+            ca_cert=self.ca_cert,
+            logger=self.logger
+        )
 
+        self.update_status(constants.STATUS_IDLE)
+        self.switch_stage_lock.release()
         self.logger.info('Worker is running')
         
-        # TODO
-        # main loop to check workers and queue logger and handle errors
+        try:
+            while not self.shutdown_received():
+                # TODO
+                # check workers and queue logger and handle errors
+                time.sleep(60)
+        except KeyboardInterrupt:  # shutdown via SigInt signal
+            with self.shutdown_lock:
+                self.shutdown = True
+            self.logger.info('Interrupt received, shutting down!')
         
+        # wait until last stage is switched
+        self.switch_stage_lock.acquire()
+        self.switch_stage_lock.release()
+
+        self.disable_processing()
+        
+        # wait for processing worker to finish current task
+        self.processing_thread.join(timeout=5*60)
+
+        # TODO
+        # kill processing worker if can't finish before timeout
+
+        # TODO
+        # cleanup MQ logger
+
+        self.update_status(constants.STATUS_DEAD)
+
         return 0
