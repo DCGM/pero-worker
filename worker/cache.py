@@ -27,9 +27,10 @@ class OCRFileCache:
                 if os.path.isfile(ocr_version_path):
                     with open(ocr_version_path, 'r') as version_file:
                         self.stored_stages[stage] = version_file.read()
+                else:
+                    self.clean_cached_files(self.cache_dir, stage)
         else:
             self.create_cache_dir()
-
 
     def get_stage_data_path(self, stage):
         """
