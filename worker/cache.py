@@ -19,6 +19,17 @@ class OCRFileCache:
         self.auto_cleanup = auto_cleanup
         # contains version for each stored stage
         self.stored_stages = {}
+        
+        # load existing cache
+        if os.path.exists(cache_dir):
+            for stage in os.listdir(cache_dir):
+                ocr_version_path = os.path.join(self.cache_dir, stage, 'version.txt')
+                if os.path.isfile(ocr_version_path):
+                    with open(ocr_version_path, 'r') as version_file:
+                        self.stored_stages[stage] = version_file.read()
+        else:
+            self.create_cache_dir()
+
 
     def get_stage_data_path(self, stage):
         """
@@ -62,6 +73,7 @@ class OCRFileCache:
         :param path: path where archive will be unpacked to
         :raise tarfile.TarError if Attempted Path Traversal in Tar File is detected
         :raise tarfile.TarError if tar file can't be read
+        :raise tarfile.TarError if Attempted Path Traversal attack detected in Tar File
         :raise OSError: if fails to write to filesystem
         :raise zpirfile.BadZipfile: if zipfile can't be read
         """
@@ -96,28 +108,36 @@ class OCRFileCache:
         :param version: current stage version
         :param sftp_path: path to stage ocr model on sftp server
         :param sftp_client: initialized client for getting data from sftp server
-        :throws zipfile.BadZipFile: when received archive is not properly formated zipfile
-        :throws zipfile.LargeZipFile: when a ZIP file would require ZIP64 functionality but that has not been enabled
-        :throws tarfile.TarError: when tar file cannot be extracted
-        :throws ConnectionError: if sftp connection fails
-        :throws FileNotFoundError: if file is not found on sftp server
+        :raise zipfile.BadZipFile when received archive is not properly formated zipfile
+        :raise zipfile.LargeZipFile when a ZIP file would require ZIP64 functionality but that has not been enabled
+        :raise tarfile.TarError when tar file cannot be extracted
+        :raise ConnectionError if sftp connection fails
+        :raise FileNotFoundError if file is not found on sftp server
         """
         ocr_path = os.path.join(self.cache_dir, stage)
+        ocr_version_path = os.path.join(ocr_path, 'version.txt')
         ocr_config_path = os.path.join(ocr_path, 'config.ini')
         archive_path = os.path.join(self.cache_dir, f'{stage}.archive')
 
-        # get ocr model from sftp server and save it to archive_path
-        sftp_client.sftp_get(f'{sftp_path}', archive_path)
+        if sftp_path:
+            # get ocr model from sftp server and save it to archive_path
+            sftp_client.sftp_get(f'{sftp_path}', archive_path)
+            
+            # unpack archive with model to ocr_path folder
+            self.unpack_archive(archive_path, ocr_path)
 
-        # unpack archive with model to ocr_path folder
-        self.unpack_archive(archive_path, ocr_path)
-
-        # remove archive after unpacking
-        self.clean_cached_files(archive_path)
+            # remove archive after unpacking
+            self.clean_cached_files(archive_path)
+        else:
+            os.mkdir(ocr_path)
 
         # save config
         with open(ocr_config_path, 'w') as config_file:
             config_file.write(config)
+        
+        # save version
+        with open(ocr_version_path, 'w') as version_file:
+            version.write(version)
         
         # set version
         self.stored_stages[stage] = version
