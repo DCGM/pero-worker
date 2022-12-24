@@ -68,7 +68,7 @@ class ProcessingWorker(MQClient):
         if self.controller:
             self.controller.report_status(status)
     
-    def report_statistics(stage, processed_request_count, total_processing_time):
+    def report_statistics(self, stage, processed_request_count, total_processing_time):
         """
         Update statistics about processed requests.
         :param stage: processed stage
