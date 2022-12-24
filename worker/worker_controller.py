@@ -27,6 +27,7 @@ from request_processor import get_request_processor
 # abstract class def
 from abc import ABC, abstractmethod
 
+# TODO - add hostname to logging
 # setup logging (required by kazoo)
 log_formatter = logging.Formatter('%(asctime)s WORKER %(levelname)s %(message)s')
 
@@ -60,7 +61,7 @@ class WorkerController(ABC):
         pass
 
     @abstractmethod
-    def report_status(self, status):
+    def update_status(self, status):
         """
         Receives status of the processing worker.
         :param status: processing status defined in constants.STATUS_*
@@ -68,7 +69,7 @@ class WorkerController(ABC):
         pass
 
     @abstractmethod
-    def report_statistics(self, stage, processed_request_count, total_processing_time):
+    def update_statistics(self, stage, processed_request_count, total_processing_time):
         """
         Receives processing statistics for given stage from processing worker.
         :param stage: name of stage of processed requests
@@ -305,6 +306,16 @@ class ZkWorkerController(WorkerController, ZkClient):
         self.ftp_servers = cf.server_list(servers)
         self.ftp_servers_lock.release()
     
+    def get_mq_servers(self):
+        """
+        Returns list of MQ servers where processing request are downloaded from.
+        :return: list of MQ servers
+        """
+        self.mq_server_lock.acquire()
+        servers = self.mq_servers
+        self.mq_server_lock.release()
+        return servers
+    
     def zk_callback_shutdown(self, data, status, *args):
         """
         Shutdown the worker if set to disabled state.
@@ -330,12 +341,12 @@ class ZkWorkerController(WorkerController, ZkClient):
         self.shutdown_lock.release()
         return shutdown
     
-    def update_stage_statistics(self, stage, processed_request_count, total_processing_time):
+    def update_statistics(self, stage, processed_request_count, total_processing_time):
         """
-        Updates statistics for current stage.
-        :param stage: stage name
-        :param processed_request_count: number of processed requests
-        :param total_processing_time: total processing time for given number of processed requests
+        Updates statistics for given stage.
+        :param stage: name of stage of processed requests
+        :param processed_request_count: number of processed requests from given stage
+        :param total_processing_time: total processing time of given number of requests
         """
         if not processed_request_count:
             return

@@ -66,7 +66,7 @@ class ProcessingWorker(MQClient):
         :param status: current status (taken from constants.STATUS_*)
         """
         if self.controller:
-            self.controller.report_status(status)
+            self.controller.update_status(status)
     
     def report_statistics(self, stage, processed_request_count, total_processing_time):
         """
@@ -76,7 +76,7 @@ class ProcessingWorker(MQClient):
         :param total_processing_time: total time spent on processing processed requests
         """
         if self.controller:
-            self.controller.report_statistics(stage, processed_request_count, total_processing_time)
+            self.controller.update_statistics(stage, processed_request_count, total_processing_time)
     
     def processing_enabled(self):
         """
