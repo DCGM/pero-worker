@@ -4,6 +4,8 @@
 
 import os
 import configparser
+import tarfile
+import zipfile
 
 class OCRFileCache:
     """
@@ -28,7 +30,7 @@ class OCRFileCache:
                     with open(ocr_version_path, 'r') as version_file:
                         self.stored_stages[stage] = version_file.read()
                 else:
-                    self.clean_cached_files(self.cache_dir, stage)
+                    self.clean_cached_files(os.path.join(self.cache_dir, stage))
         else:
             self.create_cache_dir()
 
@@ -120,6 +122,9 @@ class OCRFileCache:
         ocr_config_path = os.path.join(ocr_path, 'config.ini')
         archive_path = os.path.join(self.cache_dir, f'{stage}.archive')
 
+        if stage in self.stored_stages:
+            self.remove_stage(stage)
+
         if sftp_path:
             # get ocr model from sftp server and save it to archive_path
             sftp_client.sftp_get(f'{sftp_path}', archive_path)
@@ -138,7 +143,7 @@ class OCRFileCache:
         
         # save version
         with open(ocr_version_path, 'w') as version_file:
-            version.write(version)
+            version_file.write(version)
         
         # set version
         self.stored_stages[stage] = version
