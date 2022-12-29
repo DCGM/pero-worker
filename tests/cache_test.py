@@ -4,7 +4,7 @@ from worker.cache import OCRFileCache
 import sys
 import os
 
-TEST_ARCH = 'tests/test1.tar.xz'
+TEST_ARCH = 'tests/cache_test_data/test1.tar.xz'
 CACHE_DIR = './tests/tmp'
 CONFIG_CONTENT = '[TEST]\ntest_key=test value\n'
 TEST_STAGE_NAME = 'test1'
