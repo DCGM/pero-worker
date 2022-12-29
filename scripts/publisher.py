@@ -142,6 +142,12 @@ def parse_args():
         default=False,
         action='store_true'
     )
+    parser.add_argument(
+        '--gen-msg-only',
+        help='Only generate the message to output directory, do not send it to MQ.',
+        default=False,
+        action='store_true'
+    )
     return parser.parse_args()
 
 class Publisher(MQClient):
@@ -385,9 +391,29 @@ class ZkPublisher(ZkClient):
         
         return mq_servers
 
+def gen_msg(image, directory, stages, priority=0):
+    """
+    Generates processing request protobuf message to given directory.
+    :param image: image for which message will be generated
+    :param directory: output directory
+    :param stages: list of stages
+    :param priority: request priority
+    """
+    with open(image, 'rb') as img:
+        msg = Publisher.create_msg(img, stages, priority)
+        out_file = os.path.join(directory, f'{msg.uuid}.protobuf')
+        with open(out_file, 'wb') as output:
+            output.write(msg.SerializeToString())
+
 def main():
     args = parse_args()
     mq_servers = None
+
+    # just generate message
+    if args.gen_msg_only:
+        for image in args.images:
+            gen_msg(image, args.directory, args.stages, args.priority)
+        return 0
     
     # check for mq servers
     if args.mq_servers:
