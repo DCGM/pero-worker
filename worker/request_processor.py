@@ -7,6 +7,7 @@ import logging
 import time  # dummy processing
 import random  # dummy processing
 import datetime
+from io import StringIO  # logging to message
 from abc import ABC, abstractmethod
 
 # pero OCR
@@ -21,6 +22,7 @@ from google.protobuf.timestamp_pb2 import Timestamp
 import cv2
 import magic
 import numpy as np
+import torch
 
 class RequestProcessor(ABC):
     """
