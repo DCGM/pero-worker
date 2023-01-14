@@ -10,7 +10,10 @@ import logging
 import uuid
 import datetime
 import time
-from stats import StatsCounter
+try:
+    from stats import StatsCounter
+except ModuleNotFoundError:
+    from scripts.stats import StatsCounter
 
 # connection auxiliary formatting functions
 import worker_functions.connection_aux_functions as cf

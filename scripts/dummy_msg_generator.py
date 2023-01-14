@@ -15,7 +15,10 @@ import time
 # connection auxiliary formatting functions
 import worker_functions.connection_aux_functions as cf
 
-from publisher import ZkPublisher
+try:
+    from publisher import ZkPublisher
+except ModuleNotFoundError:
+    from scripts.publisher import ZkPublisher
 from worker_functions.mq_client import MQClient
 
 # MQ
