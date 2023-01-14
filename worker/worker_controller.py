@@ -8,6 +8,7 @@ import time
 import uuid
 import traceback
 import threading
+import copy
 
 # zookeeper
 from kazoo.client import KazooClient
@@ -20,9 +21,9 @@ import worker_functions.constants as constants
 import worker_functions.connection_aux_functions as cf
 from worker_functions.sftp_client import SFTP_Client
 from worker_functions.zk_client import ZkClient
-from cache import OCRFileCache
-from processing_worker import ProcessingWorker
-from request_processor import get_request_processor
+from worker.cache import OCRFileCache
+from worker.processing_worker import ProcessingWorker
+from worker.request_processor import get_request_processor
 
 # abstract class def
 from abc import ABC, abstractmethod
@@ -49,8 +50,8 @@ class WorkerController(ABC):
     Worker controller - manages configuration and performes coordination of processing.
     """
 
-    self.worker_id = None
-    self.enabled = False
+    worker_id = None
+    enabled = False
 
     @abstractmethod
     def get_mq_servers(self):
@@ -146,6 +147,12 @@ class ZkWorkerController(WorkerController, ZkClient):
         # threads
         self.processing_thread = None
 
+        # connection data copies
+        self.ftp_servers = []
+        self.mq_servers = []
+        self.mq_server_lock = threading.Lock()  # guards mq_servers list
+        self.ftp_servers_lock = threading.Lock()
+
         # synchronization
         self.status_lock = threading.Lock()
         self.switch_stage_lock = threading.Lock()
@@ -162,7 +169,7 @@ class ZkWorkerController(WorkerController, ZkClient):
         Creates new SFTP connection
         """
         self.ftp_servers_lock.acquire()
-        sftp = SFTP_Client(self.ftp_servers, self.username, self.password, self.logger)
+        sftp = SFTP_Client(copy.deepcopy(self.ftp_servers), self.username, self.password, self.logger)
         self.ftp_servers_lock.release()
         sftp.sftp_connect()
         return sftp
@@ -312,7 +319,7 @@ class ZkWorkerController(WorkerController, ZkClient):
         :return: list of MQ servers
         """
         self.mq_server_lock.acquire()
-        servers = self.mq_servers
+        servers = copy.deepcopy(self.mq_servers)
         self.mq_server_lock.release()
         return servers
     

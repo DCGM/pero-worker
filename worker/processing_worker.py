@@ -100,7 +100,7 @@ class ProcessingWorker(MQClient):
         :param processing_request: processing request to publish
         :param next_stage: next stage queue name
         """
-        channel.basic_publish(
+        self.mq_channel.basic_publish(
             exchange='',
             routing_key=next_stage,  # queue name (stage name)
             body=processing_request.SerializeToString(),
@@ -123,7 +123,7 @@ class ProcessingWorker(MQClient):
         """
         try:
             processing_request = ProcessingRequest().FromString(body)
-        except Exception as e:
+        except Exception:
             self.logger.error('Failed to parse received request!')
             self.logger.debug(f'Received error:\n{traceback.format_exc()}')
             channel.basic_nack(delivery_tag = method.delivery_tag, requeue = True)
@@ -137,7 +137,13 @@ class ProcessingWorker(MQClient):
 
         # select next processing stage
         processing_request.processing_stages.pop(0)
-        next_stage = processing_request.processing_stages[0]
+        try:
+            next_stage = processing_request.processing_stages[0]
+        except IndexError:
+            self.logger.error('Request with id {processing_request.uuid} with page {processing_request.page_uuid} does not have output stage defined, dropping request!')
+            channel.basic_ack(delivery_tag = method.delivery_tag)
+            return 0
+        
         if log.status != 'OK':
             next_stage = processing_request.processing_stages[-1]
 
@@ -230,6 +236,7 @@ class ProcessingWorker(MQClient):
                 except pika.exceptions.AMQPError as e:
                     # connection to MQ failed
                     self.logger.error('Failed to get new processing requests due to MQ connection error!')
+                    self.logger.debug(f'Received error:\n{traceback.format_exc()}')
                     self.report_status(constants.STATUS_CONNECTION_FAILED)
                     continue
                 
@@ -241,7 +248,7 @@ class ProcessingWorker(MQClient):
 
                 # process request
                 try:
-                    spent_time = self.process_request(self.channel, method, properties, body)
+                    spent_time = self.process_request(self.mq_channel, method, properties, body)
                 except KeyboardInterrupt:
                     raise
                 except pika.exceptions.AMQPError as e:

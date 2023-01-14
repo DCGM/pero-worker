@@ -77,18 +77,16 @@ class RequestProcessor(ABC):
         else:
             log.status = 'OK'
         finally:
-            # Timestamp
-            end_time = datetime.datetime.now(datetime.timezone.utc)
-            Timestamp.FromDatetime(log.end, end_time)
-            
             # add buffered log to the message
             buffer_handler.flush()
             log.log += log_buffer.getvalue()
             # remove handler to prevent memory leak (buffer is discarded and never used again)
             self.logger.removeHandler(buffer_handler)
-            
-            spent_time = (end_time - start_time).total_seconds()
-            return spent_time
+        # Timestamp
+        end_time = datetime.datetime.now(datetime.timezone.utc)
+        Timestamp.FromDatetime(log.end, end_time)
+        spent_time = (end_time - start_time).total_seconds()
+        return spent_time
 
     def cleanup(self):
         """
