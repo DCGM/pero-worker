@@ -14,6 +14,7 @@ import copy
 from kazoo.client import KazooClient
 from kazoo.handlers.threading import KazooTimeoutError
 from kazoo.protocol.states import KazooState
+from kazoo.retry import KazooRetry
 import kazoo.exceptions
 
 # constants
@@ -21,29 +22,18 @@ import worker_functions.constants as constants
 import worker_functions.connection_aux_functions as cf
 from worker_functions.sftp_client import SFTP_Client
 from worker_functions.zk_client import ZkClient
-from worker.cache import OCRFileCache
-from worker.processing_worker import ProcessingWorker
-from worker.request_processor import get_request_processor
+
+try:
+    from worker.cache import OCRFileCache
+    from worker.processing_worker import ProcessingWorker
+    from worker.request_processor import get_request_processor
+except ModuleNotFoundError:
+    from cache import OCRFileCache
+    from processing_worker import ProcessingRequest
+    from request_processor import get_request_processor
 
 # abstract class def
 from abc import ABC, abstractmethod
-
-# TODO - add hostname to logging
-# setup logging (required by kazoo)
-log_formatter = logging.Formatter('%(asctime)s WORKER %(levelname)s %(message)s')
-
-# use UTC time in log
-log_formatter.converter = time.gmtime
-
-stderr_handler = logging.StreamHandler()
-stderr_handler.setFormatter(log_formatter)
-
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-# TODO - remove debug level
-logger.setLevel(logging.DEBUG)
-logger.addHandler(stderr_handler)
-logger.propagate = False
 
 class WorkerController(ABC):
     """
@@ -121,7 +111,7 @@ class ZkWorkerController(WorkerController, ZkClient):
         """
 
         # initialize zookeeper client
-        super(WorkerController).__init__(
+        super(WorkerController, self).__init__(
             zookeeper_servers = zookeeper_servers,
             username = username,
             password = password,
@@ -174,14 +164,16 @@ class ZkWorkerController(WorkerController, ZkClient):
         sftp.sftp_connect()
         return sftp
     
-    def get_status(self):
+    def get_status(self, timeout=-1):
         """
         Get current status.
         :return: self.status
         """
-        self.status_lock.acquire()
-        status = self.status
-        self.status_lock.release()
+        if self.status_lock.acquire(timeout=timeout):
+            status = self.status
+            self.status_lock.release()
+        else:
+            status = 'UNKNOWN'
         return status
     
     def update_status(self, status):
@@ -241,21 +233,27 @@ class ZkWorkerController(WorkerController, ZkClient):
                 ):
                     self.worker_id = uuid.uuid4().hex
 
-        # set worker initial status
         self.zk.ensure_path(
-            constants.WORKER_STATUS_TEMPLATE.format(worker_id = self.worker_id),
-            self.status.encode('utf-8')
+            constants.WORKER_STATUS_TEMPLATE.format(worker_id = self.worker_id)
         )
         self.zk.ensure_path(
             constants.WORKER_QUEUE_TEMPLATE.format(worker_id = self.worker_id)
         )
-        # set worker to enabled state
         self.zk.ensure_path(
-            constants.WORKER_ENABLED_TEMPLATE.format(worker_id = self.worker_id),
-            'true'.encode('utf-8')
+            constants.WORKER_ENABLED_TEMPLATE.format(worker_id = self.worker_id)
         )
         self.zk.ensure_path(
             constants.WORKER_UNLOCK_TIME.format(worker_id = self.worker_id)
+        )
+        # set worker initial status
+        self.zk.set(
+            path=constants.WORKER_STATUS_TEMPLATE.format(worker_id = self.worker_id),
+            value=self.status.encode('utf-8')
+        )
+        # set worker to enabled state
+        self.zk.set(
+            path=constants.WORKER_ENABLED_TEMPLATE.format(worker_id = self.worker_id),
+            value='true'.encode('utf-8')
         )
         self.init_zookeeper_connection_status()
         self.init_complete = True
@@ -292,8 +290,15 @@ class ZkWorkerController(WorkerController, ZkClient):
         :param state: zookeeper state passed in when connection event occures
         """
         if state == KazooState.CONNECTED:
+            self.logger.debug('Connection to zookeeper restored!')
             if self.worker_id and self.init_complete:
+                self.logger.debug('Changing status in zookeeper to connected!')
                 self.init_zookeeper_connection_status()
+        if state == KazooState.SUSPENDED:
+            self.logger.debug('Conneciton to zookeeper suspended!')
+        if state == KazooState.LOST:
+            self.logger.debug('Connection to zookeeper lost!')
+        self.logger.debug(f'Zookeeper connected: {self.zk.connected}')
     
     def set_mq_server_list(self, servers):
         """
@@ -452,9 +457,9 @@ class ZkWorkerController(WorkerController, ZkClient):
         :raise kazoo.exceptions.ZookeeperError if fails to get configuration from zookeeper
         :raise ConnectionError if fails to connect to sftp servers
         """
-        config = zk.get(constants.QUEUE_CONFIG_TEMPLATE.format(queue_name=stage))[0].decode('utf-8')
+        config = self.zk.get(constants.QUEUE_CONFIG_TEMPLATE.format(queue_name=stage))[0].decode('utf-8')
         try:
-            ftp_path = zk.get(constants.QUEUE_CONFIG_PATH_TEMPLATE.format(queue_name=stage))[0].decode('utf-8')
+            ftp_path = self.zk.get(constants.QUEUE_CONFIG_PATH_TEMPLATE.format(queue_name=stage))[0].decode('utf-8')
         except kazoo.exceptions.NoNodeError:
             # model not required (dummy configuration)
             ftp_path = ''
@@ -515,6 +520,12 @@ class ZkWorkerController(WorkerController, ZkClient):
             self.switch_stage_lock.release()
             return
         
+        # check if stage name is not empty - processing disabled
+        if not stage:
+            self.disable_processing()
+            self.switch_stage_lock.release()
+            return
+        
         self.stage_node_version = status.version
 
         # Load stage version
@@ -552,7 +563,7 @@ class ZkWorkerController(WorkerController, ZkClient):
         if not self.request_processor or stage != self.request_processor.stage:
             try:
                 self.stage_stats_locks[stage] = self.zk.Lock(
-                    constants.QUEUE_STATS_AVG_MSG_TIME_LOCK_TEMPLATE.format(queue_name = queue),
+                    constants.QUEUE_STATS_AVG_MSG_TIME_LOCK_TEMPLATE.format(queue_name = stage),
                     identifier=self.worker_id
                 )
             except kazoo.exceptions.ZookeeperError:
@@ -587,13 +598,22 @@ class ZkWorkerController(WorkerController, ZkClient):
         self.start_processing()
         self.switch_stage_lock.release()
     
+    def setup_logger(self):
+        """
+        Adds worker id and hostname to log messages.
+        """
+        host_worker_id = f'{os.uname().nodename} {self.worker_id}'
+        log_formatter = logging.Formatter('%(asctime)s ' + host_worker_id + ' %(levelname)s %(message)s')
+        # use UTC time in log
+        log_formatter.converter = time.gmtime
+        worker_handler = logging.StreamHandler()
+        worker_handler.setFormatter(log_formatter)
+        self.logger.addHandler(worker_handler)
+    
     def run(self):
         """
         Start the worker
         """
-        # prevent stage switching during startup
-        self.switch_stage_lock.acquire()
-
         # Create persistent cache if worker id is persistent
         if self.worker_id:
             self.ocr_file_cache = OCRFileCache(
@@ -616,8 +636,9 @@ class ZkWorkerController(WorkerController, ZkClient):
             self.logger.critical('Failed to register worker in zookeeper!')
             self.logger.critical('Received error:\n{}'.format(traceback.format_exc()))
             return 1
-        
-        self.logger.info('Worker id: {}'.format(self.worker_id))
+
+        # setup logging format
+        self.setup_logger()
 
         # create auto-removable cache if worker id is auto-generated
         if not self.ocr_file_cache:
@@ -638,6 +659,20 @@ class ZkWorkerController(WorkerController, ZkClient):
             self.logger.critical('Failed to get lists of MQ and FTP servers!')
             self.logger.critical('Received error:\n{}'.format(traceback.format_exc()))
             return 1
+        
+        # TODO
+        # add logging to MQ
+
+        # init processing worker
+        self.processing_worker = ProcessingWorker(
+            controller=self,
+            username=self.username,
+            password=self.password,
+            ca_cert=self.ca_cert,
+            logger=self.logger
+        )
+
+        self.update_status(constants.STATUS_IDLE)
 
         # register zookeeper callbacks:
         # update MQ server list
@@ -653,7 +688,7 @@ class ZkWorkerController(WorkerController, ZkClient):
         # switch queue callback
         self.zk.DataWatch(
             path=constants.WORKER_QUEUE_TEMPLATE.format(worker_id=self.worker_id),
-            func=self.zk_callback_switch_queue
+            func=self.zk_callback_switch_stage
         )
         # shutdown callback
         self.zk.DataWatch(
@@ -663,26 +698,18 @@ class ZkWorkerController(WorkerController, ZkClient):
         # connection listener
         self.zk.add_listener(self.connection_state_listener)
 
-        # TODO
-        # add logging to MQ
-
-        # init processing worker
-        self.processing_worker = ProcessingWorker(
-            controller=self,
-            username=self.username,
-            password=self.password,
-            ca_cert=self.ca_cert,
-            logger=self.logger
-        )
-
-        self.update_status(constants.STATUS_IDLE)
-        self.switch_stage_lock.release()
         self.logger.info('Worker is running')
         
         try:
             while not self.shutdown_received():
                 # TODO
                 # check workers and queue logger and handle errors
+
+                # debug messages
+                self.logger.debug('Periodic info:')
+                self.logger.debug(f'Zookeeper connected: {self.zk.connected}')
+                self.logger.debug(f'Status: {self.get_status(timeout=10)}')
+
                 time.sleep(60)
         except KeyboardInterrupt:  # shutdown via SigInt signal
             with self.shutdown_lock:
@@ -696,7 +723,8 @@ class ZkWorkerController(WorkerController, ZkClient):
         self.disable_processing()
         
         # wait for processing worker to finish current task
-        self.processing_thread.join(timeout=5*60)
+        if self.processing_thread:
+            self.processing_thread.join(timeout=5*60)
 
         # TODO
         # kill processing worker if can't finish before timeout
@@ -705,5 +733,14 @@ class ZkWorkerController(WorkerController, ZkClient):
         # cleanup MQ logger
 
         self.update_status(constants.STATUS_DEAD)
+
+        # Run destructors explicitly - otherwise might not be called
+        # as finalizers in python are not guaranteed to run
+        # run cache destructor
+        del self.ocr_file_cache
+        # run processing worker destructor
+        del self.processing_worker
+        # TODO
+        # run MQ logger destructor
 
         return 0

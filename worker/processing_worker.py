@@ -211,7 +211,7 @@ class ProcessingWorker(MQClient):
                     self.mq_connect_retry(max_retry = 0)  # Try to connect to MQ servers until success
                 except ConnectionError as e:
                     self.logger.error(f'{e}')
-                    self.report_status(constants.STATUS_CONNECTION_FAILED)
+                    self.report_status(constants.STATUS_MQ_CONNECTION_FAILED)
                     status_code = 1
                     break
                 else:
@@ -237,7 +237,7 @@ class ProcessingWorker(MQClient):
                     # connection to MQ failed
                     self.logger.error('Failed to get new processing requests due to MQ connection error!')
                     self.logger.debug(f'Received error:\n{traceback.format_exc()}')
-                    self.report_status(constants.STATUS_CONNECTION_FAILED)
+                    self.report_status(constants.STATUS_MQ_CONNECTION_FAILED)
                     continue
                 
                 # all requests were processed
@@ -254,7 +254,7 @@ class ProcessingWorker(MQClient):
                 except pika.exceptions.AMQPError as e:
                     # connection to MQ failed
                     self.logger.error('Failed to send processing results due to MQ connection error!')
-                    self.report_status(constants.STATUS_CONNECTION_FAILED)
+                    self.report_status(constants.STATUS_MQ_CONNECTION_FAILED)
                     requeue_messages = True
                 except Exception as e:
                     self.logger.error('Failed to process request due to unknown failure!')
