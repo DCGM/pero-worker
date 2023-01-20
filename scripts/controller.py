@@ -117,6 +117,9 @@ class Controller(ZkClient):
                         'status': self.zk.get(constants.WORKER_STATUS_TEMPLATE.format(worker_id = worker))[0].decode(),
                         'queue': self.zk.get(constants.WORKER_QUEUE_TEMPLATE.format(worker_id = worker))[0].decode()
                     }
+                    if not self.zk.exists(constants.WORKER_STATUS_CONNECTED_TEMPLATE.format(worker_id = worker)):
+                        if workers[worker]['status'] != constants.STATUS_DEAD:
+                            workers[worker]['status'] = constants.STATUS_ZK_CONNECTION_FAILED
                 except NoNodeError:
                     workers[worker] = {
                         'status' : constants.STATUS_FAILED,

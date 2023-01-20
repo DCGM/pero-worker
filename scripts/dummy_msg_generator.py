@@ -208,7 +208,8 @@ def main():
         ca_cert=args.ca_cert,
         logger=logger
     )
-    mq_servers = ZkPublisher.zk_get_mq_servers(zookeeper_servers)
+    zk_client.zk_connect()
+    mq_servers = zk_client.zk_get_mq_servers()
     zk_client.zk_disconnect()
     
     if not mq_servers:

@@ -375,11 +375,9 @@ class ZkPublisher(ZkClient):
     Client for obtaining configuration from zookeeper
     """
 
-    def zk_get_mq_servers(self, zookeeper_servers):
+    def zk_get_mq_servers(self):
         """
         Get list of mq servers from zookeeper
-        :param zookeeper_servers: list of zookeeper servers
-        :param logger: logger to use
         :return: list of mq servers or None
         """
         mq_servers = None
@@ -439,7 +437,7 @@ def main():
             ca_cert = args.ca_cert
         )
         zk_client.zk_connect()
-        mq_servers = zk_client.zk_get_mq_servers(zookeeper_servers)
+        mq_servers = zk_client.zk_get_mq_servers()
         zk_client.zk_disconnect()
 
     if not mq_servers:
