@@ -11,6 +11,7 @@ import time
 import datetime
 import sys
 import threading
+import configparser
 
 import worker_functions.constants as constants
 
@@ -23,34 +24,20 @@ import kazoo.exceptions
 from worker_functions.zk_client import ZkClient
 import worker_functions.connection_aux_functions as cf
 
-# === Global config ===
-
-# setup logging (required by kazoo)
-log_formatter = logging.Formatter('%(asctime)s WATCHDOG %(levelname)s %(message)s')
-
-# use UTC time in log
-log_formatter.converter = time.gmtime
-
-stderr_handler = logging.StreamHandler()
-stderr_handler.setFormatter(log_formatter)
-
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-# TODO - remove debug level
-logger.setLevel(logging.DEBUG)
-logger.addHandler(stderr_handler)
-
-# TODO
-# parse args
 def parse_args():
     parser = argparse.ArgumentParser(
         'Adjusts worker configuration based on current statistics.'
     )
     parser.add_argument(
+        '-c', '--config',
+        help='Path to configuration file.',
+        default=None
+    )
+    parser.add_argument(
         '-z', '--zookeeper',
         help='List of zookeeper servers from where configuration will be downloaded. If port is omitted, default zookeeper port is used.',
         nargs='+',
-        default=['127.0.0.1:2181']
+        default=[]
     )
     parser.add_argument(
         '-l', '--zookeeper-list',
@@ -71,6 +58,12 @@ def parse_args():
         '-e', '--ca-cert',
         help='CA Certificate for SSL/TLS connection verification.',
         default=None
+    )
+    parser.add_argument(
+        '-d', '--debug',
+        help='Enable debug log output.',
+        default=False,
+        action='store_true'
     )
     parser.add_argument(
         '--dry-run',
@@ -176,7 +169,7 @@ class WorkerWatchdog(ZkClient):
                 if queue_zk_stats[queue]['avg_msg_time']:
                     queue_zk_stats[queue]['avg_msg_time'] = float.fromhex(queue_zk_stats[queue]['avg_msg_time'])
                 else:
-                    queue_zk_stats[queue]['avg_msg_time'] = 1
+                    queue_zk_stats[queue]['avg_msg_time'] = 100
 
                 queue_zk_stats[queue]['administrative_priority'] = int.from_bytes(self.zk.get(
                     constants.QUEUE_CONFIG_ADMINISTRATIVE_PRIORITY_TEMPLATE.format(queue_name = queue))[0],
@@ -328,6 +321,9 @@ class WorkerWatchdog(ZkClient):
             try:
                 status = self.zk.get(constants.WORKER_STATUS_TEMPLATE.format(
                     worker_id = worker))[0].decode('utf-8')
+                if not self.zk.exists(constants.WORKER_STATUS_CONNECTED_TEMPLATE.format(worker_id = worker))\
+                        and status != constants.STATUS_DEAD:
+                    status = constants.STATUS_ZK_CONNECTION_FAILED
             except kazoo.exceptions.NoNodeError:
                 self.logger.warning(
                     'Worker {} does not have status field defined in zookeeper!'
@@ -335,13 +331,17 @@ class WorkerWatchdog(ZkClient):
                 )
                 continue
             
-            # skip dead and failed workers
-            if status == constants.STATUS_DEAD:
-                continue
-            if status == constants.STATUS_FAILED:
-                self.logger.warning('Failed worker found! Worker id: {}'.format(worker))
-                # TODO
-                # notify admin
+            # report workers disconected from zookeeper (and skip them)
+            if status == constants.STATUS_ZK_CONNECTION_FAILED:
+                self.logger.warning('Unavailable worker found! Worker id: {}'.format(worker))
+            # report failed workers
+            if status in constants.STATUS_GROUP_FAILURE:
+                self.logger.warning('Failed worker found! Worker id: {worker_id}, error type: {error_state}'.format(
+                    worker_id = worker,
+                    error_state = status
+                ))
+            # skip dead, unrecoverable and recovering/reconfiguring workers
+            if status not in constants.STATUS_GROUP_RUNNING and status not in constants.STATUS_GROUP_FAILURE:
                 continue
             
             # add worker statistics
@@ -511,12 +511,7 @@ class WorkerWatchdog(ZkClient):
         # get list of free workers
         free_workers = []
         for worker in worker_stats:
-            worker_queue = worker_stats[worker]['queue']
-            # worker is not assigned to any queue
-            if not worker_queue:
-                free_workers.append(worker)
-            # worker is processing queue with no messages
-            elif queue_priorities[worker_queue] == 0:
+            if worker_stats[worker]['status'] != constants.STATUS_PROCESSING:
                 free_workers.append(worker)
 
         # switch free workers to queues
@@ -657,16 +652,67 @@ class WorkerWatchdog(ZkClient):
 def main():
     args = parse_args()
 
-    zookeeper_servers = cf.zk_server_list(args.zookeeper)
+    # setup logging (required by kazoo)
+    log_formatter = logging.Formatter('%(asctime)s WATCHDOG %(levelname)s %(message)s')
+
+    # use UTC time in log
+    log_formatter.converter = time.gmtime
+
+    stderr_handler = logging.StreamHandler()
+    stderr_handler.setFormatter(log_formatter)
+
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.INFO)
+    if args.debug:
+        logger.setLevel(logging.DEBUG)
+    
+    logger.addHandler(stderr_handler)
+
+    zookeeper_servers = None
+    username = None
+    password = None
+    ca_cert = None
+
+    if args.config:
+        config = configparser.ConfigParser()
+        config.read(args.config)
+
+        if 'WATCHDOG' in config:
+            conf_section = 'WATCHDOG'
+        elif 'WORKER' in config:  # use worker configuration instead
+            conf_section = 'WORKER'
+        else:
+            conf_section = None
+            logger.warning('Watchdog configuration section not found in given configuration!')
+        
+        if conf_section:
+            if 'zookeeper_servers' in config[conf_section]:
+                zookeeper_servers = cf.zk_server_list(config[conf_section]['zookeeper_servers'])
+            if 'username' in config[conf_section]:
+                username = config[conf_section]['username']
+            if 'password' in config[conf_section]:
+                password = config[conf_section]['password']
+            if 'ca_cert' in config[conf_section]:
+                ca_cert = config[conf_section]['ca_cert']
+
+    if args.zookeeper:
+        zookeeper_servers = cf.zk_server_list(args.zookeeper)
     if args.zookeeper_list:
         zookeeper_servers = cf.zk_server_list(args.zookeeper_list)
+    if args.username:
+        username = args.username
+    if args.password:
+        password = args.password
+    if args.ca_cert:
+        ca_cert = args.ca_cert
 
     watchdog = WorkerWatchdog(
         zookeeper_servers=zookeeper_servers,
-        username=args.username,
-        password=args.password,
-        ca_cert=args.ca_cert,
-        dry_run=args.dry_run
+        username=username,
+        password=password,
+        ca_cert=ca_cert,
+        dry_run=args.dry_run,
+        logger=logger
     )
 
     return watchdog.run()

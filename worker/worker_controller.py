@@ -29,7 +29,7 @@ try:
     from worker.request_processor import get_request_processor
 except ModuleNotFoundError:
     from cache import OCRFileCache
-    from processing_worker import ProcessingRequest
+    from processing_worker import ProcessingWorker
     from request_processor import get_request_processor
 
 # abstract class def
