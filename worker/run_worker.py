@@ -63,6 +63,17 @@ def parse_args():
         default=None
     )
     argparser.add_argument(
+        '--disable-remote-logging',
+        help='Disables logging to MQ.',
+        default=False,
+        action='store_true'
+    )
+    argparser.add_argument(
+        '-q', '--log-queue',
+        help='Name of log queue on MQ.',
+        default=None
+    )
+    argparser.add_argument(
         '-d', '--debug',
         help='Enable debugging log output.',
         default=False,
@@ -86,6 +97,8 @@ def main():
     ca_cert = None
     worker_id = None
     cache_dir = '/tmp'
+    log_queue = 'log'
+    disable_remote_logging = False
 
     # parse config file
     if args.config:
@@ -106,6 +119,11 @@ def main():
                 worker_id = config['WORKER']['worker_id']
             if 'cache_dir' in config['WORKER']:
                 cache_dir = config['WORKER']['cache_dir']
+            if 'log_queue' in config['WORKER']:
+                log_queue = config['WORKER']['log_queue']
+            if 'disable_remote_logging' in config['WORKER']:
+                disable_remote_logging = True if config['WORKER']['disable_remote_logging'] == 'True'\
+                    or config['WORKER']['disable_remote_logging'] == '1' else False
     
     # parse arguments
     if args.zookeeper:
@@ -120,6 +138,10 @@ def main():
         worker_id = args.id
     if args.cache_directory:
         cache_dir = args.cache_directory
+    if args.log_queue:
+        log_queue = args.log_queue
+    if args.disable_remote_logging:
+        disable_remote_logging = args.disable_remote_logging
 
     # run worker
     worker = ZkWorkerController(
@@ -129,6 +151,8 @@ def main():
         ca_cert = ca_cert,
         worker_id = worker_id,
         cache_dir = cache_dir,
+        mq_log_queue = log_queue,
+        disable_remote_logging = disable_remote_logging,
         logger = logger
     )
     return worker.run()

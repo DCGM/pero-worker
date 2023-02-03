@@ -27,10 +27,12 @@ try:
     from worker.cache import OCRFileCache
     from worker.processing_worker import ProcessingWorker
     from worker.request_processor import get_request_processor
+    from worker.mq_logger import MQLogger
 except ModuleNotFoundError:
     from cache import OCRFileCache
     from processing_worker import ProcessingWorker
     from request_processor import get_request_processor
+    from mq_logger import MQLogger
 
 # abstract class def
 from abc import ABC, abstractmethod
@@ -97,6 +99,8 @@ class ZkWorkerController(WorkerController, ZkClient):
         ca_cert=None,
         worker_id=None,
         cache_dir='/tmp',
+        mq_log_queue='log',
+        disable_remote_logging = False,
         logger=logging.getLogger(__name__)
     ):
         """
@@ -107,6 +111,8 @@ class ZkWorkerController(WorkerController, ZkClient):
         :param ca_cert: path to CA certificate to verify SSL/TLS connection
         :param worker_id: worker identifier for identification in zookeeper
         :param cache_dir: path to directory where OCR files will be stored
+        :param mq_log_queue: name of log queue on MQ
+        :param disable_mq_logging: if set to True worker will not log to MQ log queue
         :param logger: logger instance to use for logging
         """
 
@@ -134,8 +140,14 @@ class ZkWorkerController(WorkerController, ZkClient):
         self.request_processor = None
         self.processing_worker = None
 
+        # MQ logger
+        self.mq_logger = None
+        self.mq_log_queue = mq_log_queue
+        self.disable_mq_logging = disable_remote_logging
+
         # threads
         self.processing_thread = None
+        self.logging_thread = None
 
         # connection data copies
         self.ftp_servers = []
@@ -598,6 +610,35 @@ class ZkWorkerController(WorkerController, ZkClient):
         self.start_processing()
         self.switch_stage_lock.release()
     
+    def run_mq_logger(self):
+        """
+        Starts MQ logger activity in background thread.
+        """
+        if self.disable_mq_logging:
+            return
+        
+        self.logging_thread = threading.Thread(
+            target=self.mq_logger.run
+        )
+        self.logging_thread.start()
+    
+    def setup_mq_logger(self, log_formatter):
+        """
+        Initializes MQ logger.
+        """
+        if self.disable_mq_logging:
+            return
+        
+        self.mq_logger = MQLogger(
+            controller = self,
+            username = self.username,
+            password = self.password,
+            ca_cert = self.ca_cert,
+            mq_log_queue = self.mq_log_queue,
+            log_formatter = log_formatter,
+            logger = self.logger
+        )
+    
     def setup_logger(self):
         """
         Adds worker id and hostname to log messages.
@@ -609,6 +650,7 @@ class ZkWorkerController(WorkerController, ZkClient):
         worker_handler = logging.StreamHandler()
         worker_handler.setFormatter(log_formatter)
         self.logger.addHandler(worker_handler)
+        self.setup_mq_logger(log_formatter)
     
     def run(self):
         """
@@ -660,8 +702,8 @@ class ZkWorkerController(WorkerController, ZkClient):
             self.logger.critical('Received error:\n{}'.format(traceback.format_exc()))
             return 1
         
-        # TODO
-        # add logging to MQ
+        # run mq logger
+        self.run_mq_logger()
 
         # init processing worker
         self.processing_worker = ProcessingWorker(
@@ -725,6 +767,10 @@ class ZkWorkerController(WorkerController, ZkClient):
         # wait for processing worker to finish current task
         if self.processing_thread:
             self.processing_thread.join(timeout=5*60)
+        
+        # stop MQ logger
+        if self.logging_thread:
+            self.logging_thread.join(timeout=5*60)
 
         # TODO
         # kill processing worker if can't finish before timeout
@@ -740,7 +786,7 @@ class ZkWorkerController(WorkerController, ZkClient):
         del self.ocr_file_cache
         # run processing worker destructor
         del self.processing_worker
-        # TODO
         # run MQ logger destructor
+        del self.mq_logger
 
         return 0
