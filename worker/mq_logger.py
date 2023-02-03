@@ -12,6 +12,28 @@ import pika
 from worker_functions.mq_client import MQClient
 
 
+class TimeoutQueueListener(logging.handlers.QueueListener):
+    def dequeue(self, block=True, timeout=None):
+        """
+        Dequeue with timeout.
+        Overrides default 'dequeue' method that allows only blocking or non-blocking get.
+        :param block: if True, blocks until record is read from queue
+        :param timeout: timeout for getting record from queue, works only if block=True
+        """
+        return self.queue.get(block=block, timeout=timeout)
+
+class SilentQueueHandler(logging.handlers.QueueHandler):
+    def enqueue(self, record):
+        """
+        Enqueue record without raising error if queue is full. Silently drops record instead.
+        :param record: record to enqueue
+        """
+        try:
+            self.queue.put_nowait(record)
+        except queue.Full:
+            # queue is full, record is discarded
+            pass
+
 class MQLogger(MQClient):
     def __init__(
         self,
@@ -60,13 +82,13 @@ class MQLogger(MQClient):
         :param log_formatter: Log formatter to format logs received from queue.
         :return: QueueListener listening on logger output queue
         """
-        q = queue.Queue()
-        queue_handler = logging.handlers.QueueHandler(q)
+        q = queue.Queue(maxsize=200)
+        queue_handler = SilentQueueHandler(q)
         if log_formatter:
             queue_handler.setFormatter(log_formatter)
         self.logger.addHandler(queue_handler)
 
-        return logging.handlers.QueueListener(q, respect_handler_level=True)
+        return TimeoutQueueListener(q, respect_handler_level=True)
     
     def get_mq_servers(self):
         """
@@ -94,21 +116,21 @@ class MQLogger(MQClient):
         """
         log_message = None  # remember log message for retry send if connection fails
         try:
-            while True:
+            while not self.shutdown_received():
                 # connect to MQ servers
                 try:
                     self.mq_connect_retry(max_retry = 0)  # Try to connect to MQ servers until success
                 except ConnectionError as e:
                     self.logger.error(f'Logger failed to connect to MQ, received error: {e}')
-                    if self.shutdown_received():
-                        break
-                    else:
-                        continue
+                    continue
                 
-                # TODO - create own implementation of queue_listener to add timeout
                 # get messages from local queue
                 if not log_message:
-                    log_message = self.queue_listener.dequeue(block=True)
+                    try:
+                        # timeout prevents deadlock on worker shutdown
+                        log_message = self.queue_listener.dequeue(block=True, timeout=30)
+                    except queue.Empty:
+                        continue
 
                 # upload messages to MQ
                 try:
@@ -136,10 +158,6 @@ class MQLogger(MQClient):
                     # upload successfull
                     log_message = None
                 
-                if self.shutdown_received():
-                    break
         except KeyboardInterrupt:
             self.logger.info('Keyboard interrupt received!')
             self.mq_disconnect()
-
-
