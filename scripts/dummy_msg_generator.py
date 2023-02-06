@@ -15,7 +15,10 @@ import time
 # connection auxiliary formatting functions
 import worker_functions.connection_aux_functions as cf
 
-from publisher import ZkPublisher
+try:
+    from publisher import ZkPublisher
+except ModuleNotFoundError:
+    from scripts.publisher import ZkPublisher
 from worker_functions.mq_client import MQClient
 
 # MQ
@@ -27,6 +30,9 @@ from google.protobuf.timestamp_pb2 import Timestamp
 
 # setup logging (required by kazoo)
 log_formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
+
+# use UTC time in log
+log_formatter.converter = time.gmtime
 
 stderr_handler = logging.StreamHandler()
 stderr_handler.setFormatter(log_formatter)
@@ -202,7 +208,8 @@ def main():
         ca_cert=args.ca_cert,
         logger=logger
     )
-    mq_servers = ZkPublisher.zk_get_mq_servers(zookeeper_servers)
+    zk_client.zk_connect()
+    mq_servers = zk_client.zk_get_mq_servers()
     zk_client.zk_disconnect()
     
     if not mq_servers:

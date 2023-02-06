@@ -15,6 +15,7 @@ import traceback  # logging
 import configparser
 import threading
 import datetime
+import time
 import zipfile
 import tarfile
 from io import StringIO  # logging to message
@@ -53,6 +54,9 @@ from worker_functions.sftp_client import SFTP_Client
 
 # setup logging (required by kazoo)
 log_formatter = logging.Formatter('%(asctime)s WORKER %(levelname)s %(message)s')
+
+# use UTC time in log
+log_formatter.converter = time.gmtime
 
 stderr_handler = logging.StreamHandler()
 stderr_handler.setFormatter(log_formatter)

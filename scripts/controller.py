@@ -8,6 +8,7 @@ import logging
 import traceback
 import requests
 import json
+import time
 
 # aux functions
 import worker_functions.connection_aux_functions as cf
@@ -23,6 +24,9 @@ from kazoo.handlers.threading import KazooTimeoutError
 
 # setup logging (required by kazoo)
 log_formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
+
+# use UTC time in log
+log_formatter.converter = time.gmtime
 
 stderr_handler = logging.StreamHandler()
 stderr_handler.setFormatter(log_formatter)
@@ -113,6 +117,9 @@ class Controller(ZkClient):
                         'status': self.zk.get(constants.WORKER_STATUS_TEMPLATE.format(worker_id = worker))[0].decode(),
                         'queue': self.zk.get(constants.WORKER_QUEUE_TEMPLATE.format(worker_id = worker))[0].decode()
                     }
+                    if not self.zk.exists(constants.WORKER_STATUS_CONNECTED_TEMPLATE.format(worker_id = worker)):
+                        if workers[worker]['status'] != constants.STATUS_DEAD:
+                            workers[worker]['status'] = constants.STATUS_ZK_CONNECTION_FAILED
                 except NoNodeError:
                     workers[worker] = {
                         'status' : constants.STATUS_FAILED,

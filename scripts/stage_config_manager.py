@@ -7,6 +7,7 @@ import os
 import logging
 import argparse
 import datetime
+import time
 
 # worker libraries
 import worker_functions.connection_aux_functions as cf
@@ -24,6 +25,9 @@ from kazoo.handlers.threading import KazooTimeoutError
 
 # setup logging (required by kazoo)
 log_formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
+
+# use UTC time in log
+log_formatter.converter = time.gmtime
 
 stderr_handler = logging.StreamHandler()
 stderr_handler.setFormatter(log_formatter)

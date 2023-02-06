@@ -9,7 +9,11 @@ import traceback
 import logging
 import uuid
 import datetime
-from stats import StatsCounter
+import time
+try:
+    from stats import StatsCounter
+except ModuleNotFoundError:
+    from scripts.stats import StatsCounter
 
 # connection auxiliary formatting functions
 import worker_functions.connection_aux_functions as cf
@@ -32,6 +36,9 @@ from google.protobuf.timestamp_pb2 import Timestamp
 
 # setup logging (required by kazoo)
 log_formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
+
+# use UTC time in log
+log_formatter.converter = time.gmtime
 
 stderr_handler = logging.StreamHandler()
 stderr_handler.setFormatter(log_formatter)
@@ -135,6 +142,12 @@ def parse_args():
     parser.add_argument(
         '--save-message',
         help='Save message data for future use.',
+        default=False,
+        action='store_true'
+    )
+    parser.add_argument(
+        '--gen-msg-only',
+        help='Only generate the message to output directory, do not send it to MQ.',
         default=False,
         action='store_true'
     )
@@ -362,11 +375,9 @@ class ZkPublisher(ZkClient):
     Client for obtaining configuration from zookeeper
     """
 
-    def zk_get_mq_servers(self, zookeeper_servers):
+    def zk_get_mq_servers(self):
         """
         Get list of mq servers from zookeeper
-        :param zookeeper_servers: list of zookeeper servers
-        :param logger: logger to use
         :return: list of mq servers or None
         """
         mq_servers = None
@@ -381,9 +392,29 @@ class ZkPublisher(ZkClient):
         
         return mq_servers
 
+def gen_msg(image, directory, stages, priority=0):
+    """
+    Generates processing request protobuf message to given directory.
+    :param image: image for which message will be generated
+    :param directory: output directory
+    :param stages: list of stages
+    :param priority: request priority
+    """
+    with open(image, 'rb') as img:
+        msg = Publisher.create_msg(img, stages, priority)
+        out_file = os.path.join(directory, f'{msg.uuid}.protobuf')
+        with open(out_file, 'wb') as output:
+            output.write(msg.SerializeToString())
+
 def main():
     args = parse_args()
     mq_servers = None
+
+    # just generate message
+    if args.gen_msg_only:
+        for image in args.images:
+            gen_msg(image, args.directory, args.stages, args.priority)
+        return 0
     
     # check for mq servers
     if args.mq_servers:
@@ -406,7 +437,7 @@ def main():
             ca_cert = args.ca_cert
         )
         zk_client.zk_connect()
-        mq_servers = zk_client.zk_get_mq_servers(zookeeper_servers)
+        mq_servers = zk_client.zk_get_mq_servers()
         zk_client.zk_disconnect()
 
     if not mq_servers:
