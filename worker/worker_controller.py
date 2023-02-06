@@ -122,7 +122,13 @@ class ZkWorkerController(WorkerController, ZkClient):
             username = username,
             password = password,
             ca_cert = ca_cert,
-            logger = logger
+            logger = logger,
+            connection_retry=KazooRetry(
+                max_tries=0,
+                delay=0,
+                max_delay=0,
+                ignore_expire=True
+            )
         )
 
         # auth config
@@ -161,10 +167,11 @@ class ZkWorkerController(WorkerController, ZkClient):
         self.enabled_lock = threading.Lock()
         self.shutdown_lock = threading.Lock()
         self.stage_node_version = -1  # version of zookeeper node containing current stage
-        self.init_complete = False  # indicates if worker has already registered itself in zookeeper
         self.shutdown = False  # flag for remote shutdown call
         # zookeeper locks
         self.stage_stats_locks = {}  # locks for updating statistics for given stage
+        # guard for lock update - prevents using locks in self.stage_stats_locks when beeing changed
+        self.stage_stats_locks_guard_lock = threading.Lock()
     
     def sftp_connect(self):
         """
@@ -188,15 +195,16 @@ class ZkWorkerController(WorkerController, ZkClient):
             status = 'UNKNOWN'
         return status
     
-    def update_status(self, status):
+    def update_status(self, status=None):
         """
         Updates worker status
-        :param status: new status
+        :param status: new status (if omited, just updates current status to zookeeper)
         :raise NoNodeError if status node path is not initialized
         :raise ZookeeperError if server returns non zero value
         """
         self.status_lock.acquire()
-        self.status = status
+        if status:
+            self.status = status
         try:
             self.zk.set(constants.WORKER_STATUS_TEMPLATE.format(
                 worker_id = self.worker_id),
@@ -268,7 +276,6 @@ class ZkWorkerController(WorkerController, ZkClient):
             value='true'.encode('utf-8')
         )
         self.init_zookeeper_connection_status()
-        self.init_complete = True
     
     def disable_processing(self):
         """
@@ -295,22 +302,6 @@ class ZkWorkerController(WorkerController, ZkClient):
         enabled = self.enabled
         self.enabled_lock.release()
         return enabled
-
-    def connection_state_listener(self, state):
-        """
-        Handles reconnection to zookeeper state changes.
-        :param state: zookeeper state passed in when connection event occures
-        """
-        if state == KazooState.CONNECTED:
-            self.logger.debug('Connection to zookeeper restored!')
-            if self.worker_id and self.init_complete:
-                self.logger.debug('Changing status in zookeeper to connected!')
-                self.init_zookeeper_connection_status()
-        if state == KazooState.SUSPENDED:
-            self.logger.debug('Conneciton to zookeeper suspended!')
-        if state == KazooState.LOST:
-            self.logger.debug('Connection to zookeeper lost!')
-        self.logger.debug(f'Zookeeper connected: {self.zk.connected}')
     
     def set_mq_server_list(self, servers):
         """
@@ -375,6 +366,8 @@ class ZkWorkerController(WorkerController, ZkClient):
         if not processed_request_count:
             return
         
+        self.stage_stats_locks_guard_lock.acquire()
+
         avg_msg_time = total_processing_time / processed_request_count
         self.logger.debug(f'Updating stage statistics for stage {stage}')
 
@@ -389,12 +382,18 @@ class ZkWorkerController(WorkerController, ZkClient):
                 retry -= 1
                 if retry <= 0:
                     self.logger.error(f'Failed to update statistics for stage {stage}!')
+                    self.stage_stats_locks_guard_lock.release()
                     return
                 else:
                     self.logger.info(f'Trying to acquire lock again')
+            except kazoo.exceptions.ConnectionClosedError:
+                self.logger.error(f'Failed to update statistics for stage {stage} due to zookeeper connection error!')
+                self.stage_stats_locks_guard_lock.release()
+                return
             except Exception:
                 self.logger.error(f'Failed to update statistics for stage {stage}!')
                 self.logger.error(f'Received error:\n{traceback.format_exc()}')
+                self.stage_stats_locks_guard_lock.release()
                 return
             else:
                 break
@@ -434,6 +433,7 @@ class ZkWorkerController(WorkerController, ZkClient):
             self.logger.info(f'Statistics for stage {stage} updated!')
         finally:
             self.stage_stats_locks[stage].release()
+            self.stage_stats_locks_guard_lock.release()
     
     def start_processing(self):
         """
@@ -567,6 +567,7 @@ class ZkWorkerController(WorkerController, ZkClient):
         
         # remove locks for unused stages
         # (keep current stage lock for updating statistics when processing finish)
+        self.stage_stats_locks_guard_lock.acquire()
         for key in list(self.stage_stats_locks.keys()):
             if key != self.request_processor.stage:
                 self.stage_stats_locks.pop(key)
@@ -585,7 +586,10 @@ class ZkWorkerController(WorkerController, ZkClient):
                 )
                 self.logger.debug(f'Received error:\n{traceback.format_exc()}')
                 self.switch_stage_lock.release()
+                self.stage_stats_locks_guard_lock.release()
                 return
+        
+        self.stage_stats_locks_guard_lock.release()
         
         self.disable_processing()
         
@@ -652,6 +656,45 @@ class ZkWorkerController(WorkerController, ZkClient):
         self.logger.addHandler(worker_handler)
         self.setup_mq_logger(log_formatter)
     
+    def register_zookeeper_callbacks(self):
+        """
+        Registers zookeeper callbacks for getting status updates.
+        """
+        # update MQ server list
+        self.zk.ChildrenWatch(
+            path=constants.WORKER_CONFIG_MQ_SERVERS,
+            func=self.set_mq_server_list
+        )
+        # update ftp server list
+        self.zk.ChildrenWatch(
+            path=constants.WORKER_CONFIG_FTP_SERVERS,
+            func=self.set_ftp_server_list
+        )
+        # switch queue callback
+        self.zk.DataWatch(
+            path=constants.WORKER_QUEUE_TEMPLATE.format(worker_id=self.worker_id),
+            func=self.zk_callback_switch_stage
+        )
+        # shutdown callback
+        self.zk.DataWatch(
+            path=constants.WORKER_ENABLED_TEMPLATE.format(worker_id=self.worker_id),
+            func=self.zk_callback_shutdown
+        )
+    
+    def recover_zookeeper_locks(self):
+        """
+        recovers state of distributed locks after zookeeper connection failure
+        """
+        with self.stage_stats_locks_guard_lock:
+            for stage in list(self.stage_stats_locks.keys()):
+                try:
+                    self.stage_stats_locks[stage] = self.zk.Lock(
+                        constants.QUEUE_STATS_AVG_MSG_TIME_LOCK_TEMPLATE.format(queue_name = stage),
+                        identifier=self.worker_id
+                    )
+                except kazoo.exceptions.ZookeeperError:
+                    self.logger.error(f'Failed to recover stage lock for stage {stage}!')
+    
     def run(self):
         """
         Start the worker
@@ -716,29 +759,7 @@ class ZkWorkerController(WorkerController, ZkClient):
 
         self.update_status(constants.STATUS_IDLE)
 
-        # register zookeeper callbacks:
-        # update MQ server list
-        self.zk.ChildrenWatch(
-            path=constants.WORKER_CONFIG_MQ_SERVERS,
-            func=self.set_mq_server_list
-        )
-        # update ftp server list
-        self.zk.ChildrenWatch(
-            path=constants.WORKER_CONFIG_FTP_SERVERS,
-            func=self.set_ftp_server_list
-        )
-        # switch queue callback
-        self.zk.DataWatch(
-            path=constants.WORKER_QUEUE_TEMPLATE.format(worker_id=self.worker_id),
-            func=self.zk_callback_switch_stage
-        )
-        # shutdown callback
-        self.zk.DataWatch(
-            path=constants.WORKER_ENABLED_TEMPLATE.format(worker_id=self.worker_id),
-            func=self.zk_callback_shutdown
-        )
-        # connection listener
-        self.zk.add_listener(self.connection_state_listener)
+        self.register_zookeeper_callbacks()
 
         self.logger.info('Worker is running')
         
@@ -751,6 +772,25 @@ class ZkWorkerController(WorkerController, ZkClient):
                 self.logger.debug('Periodic info:')
                 self.logger.debug(f'Zookeeper connected: {self.zk.connected}')
                 self.logger.debug(f'Status: {self.get_status(timeout=10)}')
+                if not self.zk.connected:
+                    try:
+                        self.zk_connect()
+                    except KazooTimeoutError:
+                        self.logger.error('Failed to connect to zookeeper, next retry in 1 minute!')
+                    else:
+                        # recover watchs
+                        self.register_zookeeper_callbacks()
+                        # recover locks
+                        self.recover_zookeeper_locks()
+                        # recover worker status in zookeeper
+                        self.init_zookeeper_connection_status()
+                        self.update_status()
+                        self.logger.info('Connection to zookeeper recovered!')
+                
+                if not self.logging_thread.is_alive():
+                    self.logging_thread.join(10)
+                    self.run_mq_logger()
+                    self.logger.warning('MQ logger was recovered from failure!')
 
                 time.sleep(60)
         except KeyboardInterrupt:  # shutdown via SigInt signal
