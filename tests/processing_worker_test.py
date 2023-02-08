@@ -7,8 +7,8 @@ import time
 
 # processing worker
 from worker.processing_worker import ProcessingWorker
-import libs.worker_functions.connection_aux_functions as cf
-import libs.worker_functions.constants as constants
+import worker_functions.connection_aux_functions as cf
+import worker_functions.constants as constants
 
 # dummy message generator
 from scripts.dummy_msg_generator import DummyMsgGenerator

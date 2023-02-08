@@ -7,7 +7,7 @@ import time
 import argparse
 
 from worker.mq_logger import MQLogger
-import libs.worker_functions.connection_aux_functions as cf
+import worker_functions.connection_aux_functions as cf
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -35,7 +35,7 @@ def parse_args():
 
 def main():
     args = parse_args()
-    log_formatter = logging.Formatter('%(asctime)s TEST%(levelname)s %(message)s')
+    log_formatter = logging.Formatter('%(asctime)s TEST %(levelname)s %(message)s')
     log_formatter.converter = time.gmtime
 
     stderr_handler = logging.StreamHandler()

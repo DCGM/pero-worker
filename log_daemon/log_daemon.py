@@ -13,10 +13,10 @@ import configparser
 
 import pika
 
-import libs.worker_functions.connection_aux_functions as cf
-import libs.worker_functions.constants as constants
-from libs.worker_functions.mq_client import MQClient
-from libs.worker_functions.zk_client import ZkClient
+import worker_functions.connection_aux_functions as cf
+import worker_functions.constants as constants
+from worker_functions.mq_client import MQClient
+from worker_functions.zk_client import ZkClient
 
 class LogDaemonZkClient(ZkClient):
     """

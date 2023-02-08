@@ -149,6 +149,8 @@ class Controller(ZkClient):
             queue_request = 'http://{server}/api/queues'
         
         for server in monitoring_servers:
+            if not server['port']:
+                server['port'] = 15672
             try:
                 response = requests.get(
                     queue_request.format(server = cf.host_port_to_string(server)),
@@ -332,7 +334,7 @@ def main():
             try:
                 controller.shutdown_worker(worker)
             except Exception as e:
-                logger.error('Failed to shutdown worker {}!'.format(args.shutdown))
+                logger.error('Failed to shutdown worker {}!'.format(worker))
                 logger.error('Received error message: {}'.format(e))
     
     # remove worker from zookeeper
@@ -341,7 +343,7 @@ def main():
             try:
                 controller.remove_worker(worker)
             except Exception as e:
-                logger.error('Failed to remove worker {} from zookeeper!'.format(args.remove))
+                logger.error('Failed to remove worker {} from zookeeper!'.format(worker))
                 logger.error('Received error message: {}'.format(e))
                 #traceback.print_exc()
 

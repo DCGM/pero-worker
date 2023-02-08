@@ -6,7 +6,7 @@ import argparse
 import configparser
 import logging
 
-import libs.worker_functions.connection_aux_functions as cf
+import worker_functions.connection_aux_functions as cf
 from worker_controller import ZkWorkerController
 
 def dir_path(path):
