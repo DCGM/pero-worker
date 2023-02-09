@@ -215,6 +215,7 @@ class ProcessingWorker(MQClient):
                     status_code = 1
                     break
                 else:
+                    self.mq_channel.confirm_delivery()  # make broker confirm that the message was published
                     self.report_status(constants.STATUS_PROCESSING)
                 
                 if requeue_messages:
@@ -252,8 +253,9 @@ class ProcessingWorker(MQClient):
                 except KeyboardInterrupt:
                     raise
                 except pika.exceptions.AMQPError as e:
-                    # connection to MQ failed
+                    # connection to MQ failed, or MQ is full
                     self.logger.error('Failed to send processing results due to MQ connection error!')
+                    self.logger.debug(f'Received error: {e}')
                     self.report_status(constants.STATUS_MQ_CONNECTION_FAILED)
                     requeue_messages = True
                 except Exception as e:
