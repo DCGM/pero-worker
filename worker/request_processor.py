@@ -7,6 +7,7 @@ import logging
 import time  # dummy processing
 import random  # dummy processing
 import datetime
+import traceback
 from io import StringIO  # logging to message
 from abc import ABC, abstractmethod
 
