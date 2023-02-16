@@ -1,13 +1,14 @@
 # pero-worker
 
-Project contains "worker" and "watchdog" for OCR processing system that uses pero-ocr package.
+Project contains "worker", "watchdog" and log-daemon for OCR processing system that uses pero-ocr package.
 
-Processing system uses 5 components.
+Processing system uses 6 components.
 - Worker for processing data
 - Watchdog for task planing and scheduling
 - RabbitMQ message broker for task distribution
 - Zookeeper for coordination of the workers and storing the configuration
 - SFTP for storing OCR binary files.
+- Central log daemon for receiving logs from workers.
 
 ## setup
 
@@ -26,12 +27,12 @@ Source created virtual environment:
 . ./.venv/bin/activate
 ```
 
-Download pero-ocr to `pero-ocr/` folder:
+Download pero-ocr to `pero-ocr/` folder and `pero-worker-libs` to libs folder:
 ```
 git submodule init
 git submodule update
 ```
-Or do this manually by cloning pero-ocr from https://github.com/DCGM/pero-ocr.git
+Or do this manually by cloning pero-ocr from https://github.com/DCGM/pero-ocr.git and https://github.com/DCGM/pero-worker-libs.git
 
 ### Generating self-signed certificates for services
 
@@ -235,13 +236,59 @@ Create output queue from where results can be downloaded. Output queue is stage 
 python scripts/stage_config_manager.py --name out
 ```
 
+## Central logging
+
+Logging is done using RabbitMQ queue. Log daemon receiving log messages from workers requires configuration in .ini format with following fields:
+```
+[LOGD]
+zookeeper_servers=localhost
+username=pero
+password=pero_pass
+ca_cert=/etc/pero/certificates/ca.pem
+log_queue=log
+output_dir=/var/pero/logs
+log_rotation_period=10080
+number_of_files=10
+```
+
+Log queue has to be manually created (or by `stage_config_manager.py` script). List of RabbitMQ servers is downloaded from Zookeeper automatically.
+The `log_queue` parameter tells log daemon which queue is logging queue it should listen on. Logs are downloaded To folder `output_dir` and rotated every `log_rotation _period` seconds. At most `number_of_files` logs are kept, older logs are deleted. `number_of_files=0` disables log rotation.
+
+To run the log daemon use:
+```
+python log_daemon/log_daemon.py -c path/to/logd_config.ini
+```
+
 ## Running worker and watchdog
 
+Worker requires configuration for connecting to services and setting up logging queue. Rest of the configuration is downloaded from zookeeper.
 ```
-python worker/worker.py -z 127.0.0.1
+[WORKER]
+zookeeper_servers=localhost
+username=pero
+password=pero_pass
+ca_cert=/etc/pero/certificates/ca.pem
+log_queue=log
 ```
+
+To run worker use:
 ```
-python worker/worker_watchdog.py -z 127.0.0.1
+python worker/run_worker.py -c path/to/worker_config.ini
+```
+
+Watchdog requires this configuration:
+```
+[WATCHDOG]
+zookeeper_servers=localhost
+username=pero
+password=pero_pass
+ca_cert=/etc/pero/certificates/ca.pem
+```
+Alternatively worker configuration can be used, watchdog will get required information from the `[WORKER]` section.
+
+To run watchdog this command:
+```
+python watchdog/worker_watchdog.py -c path/to/watchdog_config.ini
 ```
 
 ## Processing
