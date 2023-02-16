@@ -1,7 +1,7 @@
 [submodule "pero-ocr"]
 	path = pero-ocr
 	url = https://github.com/xraurp/pero-ocr.git
-	branch = logits_buffers
+	branch = develop
 [submodule "libs"]
 	path = libs
 	url = https://github.com/DCGM/pero-worker-libs.git

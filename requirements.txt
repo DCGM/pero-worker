@@ -18,8 +18,8 @@ torchvision
 brnolm
 scikit-learn
 scikit-image
-tensorflow-gpu
-shapely
+tensorflow
+shapely==1.8.0
 pyamg
 imgaug
 arabic_reshaper
