@@ -48,6 +48,9 @@ class ProcessingWorker(MQClient):
 
         # request processor for current stage
         self.request_processor = None
+
+        # maximum numbers of processing errors before worker switches to failed state
+        self.max_errors = 10
     
     def get_mq_servers(self):
         """
@@ -111,6 +114,52 @@ class ProcessingWorker(MQClient):
             mandatory=True  # raise exception if message is rejected
         )
     
+    def publish_processing_request(self, method, processing_request, log):
+        """
+        Publish processing request to next processing stage.
+        :param method: message delivery method
+        :param processing_request: request to publish
+        :param log: processing request log for current stage
+        :raise: pika.exceptions.AMQPError if connection to MQ fails when publishing the request
+        """
+        # select next processing stage
+        processing_request.processing_stages.pop(0)
+        try:
+            next_stage = processing_request.processing_stages[0]
+        except IndexError:
+            self.logger.error('Request with id {processing_request.uuid} with page {processing_request.page_uuid} does not have output stage defined, dropping request!')
+            self.mq_channel.basic_ack(delivery_tag = method.delivery_tag)
+        
+        # send request to output queue if processing failed
+        if log.status != 'OK':
+            next_stage = processing_request.processing_stages[-1]
+
+        # publish request
+        try:
+            self.publish_request(processing_request, next_stage)
+        except pika.exceptions.UnroutableError as e:
+            self.logger.error(f'Failed to deliver processing request {processing_request.uuid} to queue {next_stage}')
+            self.logger.error(f'Received error: {e}')
+            
+            # send request to output queue if can't be send to next processing stage queue
+            self.logger.warning('Sending request to output queue instead!')
+            log.log += f'Delivery to queue {next_stage} failed!\n'
+            log.status = 'Failed'
+            next_stage = processing_request.processing_stages[-1]
+            try:
+                self.publish_request(processing_request, next_stage)
+            except pika.exceptions.UnroutableError as e:
+                self.logger.error(f'Failed to deliver processing request {processing_request.uuid} to output queue {next_stage}')
+                self.logger.error(f'Received error: {e}')
+                self.logger.error(f'Request was pushed back to queue {log.stage}!')
+                self.mq_channel.basic_nack(delivery_tag = method.delivery_tag, requeue = True)
+            else:
+                self.logger.debug(f'Acknowledging request {processing_request.uuid} from queue {log.stage}')
+                self.mq_channel.basic_ack(delivery_tag = method.delivery_tag)
+        else:
+            self.logger.debug(f'Acknowledging request {processing_request.uuid} from queue {log.stage}')
+            self.mq_channel.basic_ack(delivery_tag = method.delivery_tag)
+
     def process_request(self, channel, method, properties, body):
         """
         MQ callback for request processing.
@@ -133,46 +182,17 @@ class ProcessingWorker(MQClient):
         log.host_id = self.get_id()
 
         # Raise exception from OCR library when processing failes unrecoverably
-        spent_time = self.request_processor.process_request(processing_request, log)
-
-        # select next processing stage
-        processing_request.processing_stages.pop(0)
         try:
-            next_stage = processing_request.processing_stages[0]
-        except IndexError:
-            self.logger.error('Request with id {processing_request.uuid} with page {processing_request.page_uuid} does not have output stage defined, dropping request!')
-            channel.basic_ack(delivery_tag = method.delivery_tag)
-            return 0
-        
-        if log.status != 'OK':
-            next_stage = processing_request.processing_stages[-1]
-
-        try:
-            self.publish_request(processing_request, next_stage)
-        except pika.exceptions.UnroutableError as e:
-            self.logger.error(f'Failed to deliver processing request {processing_request.uuid} to queue {next_stage}')
-            self.logger.error(f'Received error: {e}')
-
-            self.logger.warning('Sending request to output queue instead!')
-            log.log += f'Delivery to queue {next_stage} failed!\n'
-            log.status = 'Failed'
-            next_stage = processing_request.processing_stages[-1]
-            
-            try:
-                self.publish_request(processing_request, next_stage)
-            except pika.exceptions.UnroutableError as e:
-                self.logger.error(f'Failed to deliver processing request {processing_request.uuid} to output queue {next_stage}')
-                self.logger.error(f'Received error: {e}')
-                self.logger.error(f'Request was pushed back to queue {log.stage}!')
-                channel.basic_nack(delivery_tag = method.delivery_tag, requeue = True)
-            else:
-                self.logger.debug(f'Acknowledging request {processing_request.uuid} from queue {log.stage}')
-                channel.basic_ack(delivery_tag = method.delivery_tag)
+            spent_time = self.request_processor.process_request(processing_request, log)
+        except Exception as e:
+            self.logger.error(f'Processing failed with error: {e}')
+            self.logger.debug(f'Received traceback:\n{traceback.format_exc()}')
+            # TODO - check for failed GPU driver and don't publish the request
+            self.publish_processing_request(method, processing_request, log)
+            raise
         else:
-            self.logger.debug(f'Acknowledging request {processing_request.uuid} from queue {log.stage}')
-            channel.basic_ack(delivery_tag = method.delivery_tag)
-        
-        return spent_time
+            self.publish_processing_request(method, processing_request, log)
+            return spent_time
     
     def set_request_processor(self, request_processor):
         """
@@ -193,14 +213,14 @@ class ProcessingWorker(MQClient):
         Main method of the worker.
         Starts processing of configured stage.
         :param request_processor: request_processor to use (default = use existing one)
-        :return: execution status
+        :return: execution status (error count, 0 == success, !0 == error)
         """
         if request_processor:
             self.set_request_processor(request_processor)
         
         processed_request_count = 0
         total_processing_time = 0
-        status_code = 0
+        error_count = 0
         requeue_messages = False  # Requeue unacknowledged messages after connection failure
 
         # process queue for given stage
@@ -208,12 +228,12 @@ class ProcessingWorker(MQClient):
             while self.processing_enabled():
                 # connect to MQ
                 try:
-                    self.mq_connect_retry(max_retry = 0)  # Try to connect to MQ servers until success
+                    # Try 3-times, then check if processing wasn't disabled
+                    self.mq_connect_retry(max_retry = 3)
                 except ConnectionError as e:
-                    self.logger.error(f'{e}')
+                    self.logger.error(f'Processing worker failed to connect to MQ, received error: {e}')
                     self.report_status(constants.STATUS_MQ_CONNECTION_FAILED)
-                    status_code = 1
-                    break
+                    continue
                 else:
                     self.mq_channel.confirm_delivery()  # make broker confirm that the message was published
                     self.report_status(constants.STATUS_PROCESSING)
@@ -259,12 +279,16 @@ class ProcessingWorker(MQClient):
                     self.report_status(constants.STATUS_MQ_CONNECTION_FAILED)
                     requeue_messages = True
                 except Exception as e:
-                    self.logger.error('Failed to process request due to unknown failure!')
+                    # TODO - change error count to catch RuntimeError denoting GPU failure
+                    self.logger.error('Failed to process request!')
                     self.logger.error(f'Received traceback:\n{traceback.format_exc()}')
-                    self.report_status(constants.STATUS_PROCESSING_FAILED)
-                    status_code = 1
-                    break
+                    error_count += 1
+                    if error_count > self.max_errors:
+                        self.report_status(constants.STATUS_PROCESSING_FAILED)
+                        self.logger.error('Maximum number of processing failures exceeded, waiting for manual recovery!')
+                        break
                 else:
+                    error_count = 0
                     if spent_time:
                         total_processing_time += spent_time
                         processed_request_count += 1
@@ -302,4 +326,4 @@ class ProcessingWorker(MQClient):
             except KeyboardInterrupt:
                 pass
         
-        return status_code
+        return error_count

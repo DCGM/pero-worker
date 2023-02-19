@@ -335,7 +335,7 @@ class WorkerWatchdog(ZkClient):
             if status == constants.STATUS_ZK_CONNECTION_FAILED:
                 self.logger.warning('Unavailable worker found! Worker id: {}'.format(worker))
             # report failed workers
-            if status in constants.STATUS_GROUP_FAILURE:
+            if status in constants.STATUS_GROUP_FAILURE or status == constants.STATUS_PROCESSING_FAILED:
                 self.logger.warning('Failed worker found! Worker id: {worker_id}, error type: {error_state}'.format(
                     worker_id = worker,
                     error_state = status

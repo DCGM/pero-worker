@@ -119,7 +119,8 @@ class MQLogger(MQClient):
             while not self.shutdown_received():
                 # connect to MQ servers
                 try:
-                    self.mq_connect_retry(max_retry = 0)  # Try to connect to MQ servers until success
+                    # Try to connect to MQ 3-times, then check for shutdown again
+                    self.mq_connect_retry(max_retry = 3)
                 except ConnectionError as e:
                     self.logger.error(f'Logger failed to connect to MQ, received error: {e}')
                     continue
