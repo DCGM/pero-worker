@@ -140,7 +140,7 @@ class PeroOcrRequestProcessor(RequestProcessor):
         self.config_version = config_version
         self.logger = logger
 
-        self.page_parser = PageParser(self.config, config_path)
+        self.page_parser = PageParser(config=self.config, config_path=config_path)
 
     def _process_request_data(self, processing_request):
         """
