@@ -12,7 +12,7 @@ from io import StringIO  # logging to message
 from abc import ABC, abstractmethod
 
 # pero OCR
-from pero_ocr.document_ocr.layout import PageLayout
+from pero_ocr.core.layout import PageLayout
 from pero_ocr.document_ocr.page_parser import PageParser
 
 # protobuf

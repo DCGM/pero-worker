@@ -31,7 +31,7 @@ import numpy as np
 import torch
 
 # pero OCR
-from pero_ocr.document_ocr.layout import PageLayout
+from pero_ocr.core.layout import PageLayout
 from pero_ocr.document_ocr.page_parser import PageParser
 
 # protobuf
