@@ -229,13 +229,12 @@ class ProcessingWorker(MQClient):
                 # connect to MQ
                 try:
                     # Try 3-times, then check if processing wasn't disabled
-                    self.mq_connect_retry(max_retry = 3)
+                    self.mq_connect_retry(max_retry = 3, confirm_delivery = True)
                 except ConnectionError as e:
                     self.logger.error(f'Processing worker failed to connect to MQ, received error: {e}')
                     self.report_status(constants.STATUS_MQ_CONNECTION_FAILED)
                     continue
                 else:
-                    self.mq_channel.confirm_delivery()  # make broker confirm that the message was published
                     self.report_status(constants.STATUS_PROCESSING)
                 
                 if requeue_messages:

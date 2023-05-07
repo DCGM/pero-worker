@@ -568,9 +568,10 @@ class ZkWorkerController(WorkerController, ZkClient):
         # remove locks for unused stages
         # (keep current stage lock for updating statistics when processing finish)
         self.stage_stats_locks_guard_lock.acquire()
-        for key in list(self.stage_stats_locks.keys()):
-            if key != self.request_processor.stage:
-                self.stage_stats_locks.pop(key)
+        if self.request_processor:
+            for key in list(self.stage_stats_locks.keys()):
+                if key != self.request_processor.stage:
+                    self.stage_stats_locks.pop(key)
 
         # add lock for new stage
         if not self.request_processor or stage != self.request_processor.stage:
@@ -654,6 +655,7 @@ class ZkWorkerController(WorkerController, ZkClient):
         worker_handler = logging.StreamHandler()
         worker_handler.setFormatter(log_formatter)
         self.logger.addHandler(worker_handler)
+        self.logger.propagate = False
         self.setup_mq_logger(log_formatter)
     
     def register_zookeeper_callbacks(self):
@@ -762,7 +764,7 @@ class ZkWorkerController(WorkerController, ZkClient):
         self.register_zookeeper_callbacks()
 
         self.logger.info('Worker is running')
-        
+
         try:
             while not self.shutdown_received():
                 # TODO
@@ -787,7 +789,7 @@ class ZkWorkerController(WorkerController, ZkClient):
                         self.update_status()
                         self.logger.info('Connection to zookeeper recovered!')
                 
-                if not self.logging_thread.is_alive():
+                if not self.disable_mq_logging and not self.logging_thread.is_alive():
                     self.logging_thread.join(10)
                     self.run_mq_logger()
                     self.logger.warning('MQ logger was recovered from failure!')
