@@ -257,7 +257,10 @@ class ZkConfigManager(ZkClient):
     
     def zk_delete_config(self, stage):
         if self.zk.exists(constants.QUEUE_TEMPLATE.format(queue_name = stage)):
-            self.zk.delete(constants.QUEUE_TEMPLATE.format(queue_name = stage))
+            self.zk.delete(
+                path=constants.QUEUE_TEMPLATE.format(queue_name = stage),
+                recursive=True
+            )
             self.logger.info('Configuration deleted successfully!')
 
 class MQConfigManager(MQClient):
