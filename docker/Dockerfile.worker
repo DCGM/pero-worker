@@ -1,0 +1,38 @@
+FROM debian:bullseye
+
+# install dir
+RUN mkdir /opt/PERO
+
+# copy dependencies
+COPY ./debian_dependencies.txt /opt/PERO
+COPY ./requirements.txt /opt/PERO
+COPY ./install_dependencies.sh /opt/PERO
+COPY ./libs /opt/PERO/libs
+
+# setup config folders
+RUN mkdir -p /etc/pero/certificates
+
+# copy worker
+COPY ./pero-ocr /opt/PERO/pero-ocr
+COPY ./worker /opt/PERO/worker
+COPY ./docker/run_worker.sh /opt/PERO
+
+# copy config
+COPY ./sample-config/worker.ini /etc/pero/
+
+# set workdir
+WORKDIR /opt/PERO
+
+# install dependencies
+RUN apt-get -y update
+RUN apt-get -y upgrade
+RUN sh install_dependencies.sh
+# missing dependency from debian
+RUN apt-get -y install libmagic1
+RUN apt-get -y clean
+
+# setup env
+ENV USE_CONFIG=1
+
+# run worker
+CMD ["/bin/sh", "run_worker.sh"]

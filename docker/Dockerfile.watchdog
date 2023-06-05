@@ -1,0 +1,35 @@
+FROM debian:bullseye
+
+# install dir
+RUN mkdir /opt/PERO
+
+# copy dependencies
+COPY ./docker/debian_dependencies_lightweight.txt /opt/PERO/debian_dependencies.txt
+COPY ./docker/requirements_lightweight.txt /opt/PERO/requirements.txt
+COPY ./install_dependencies.sh /opt/PERO
+COPY ./libs /opt/PERO/libs
+
+# setup config folders
+RUN mkdir -p /etc/pero/certificates
+
+# copy watchdog
+COPY ./watchdog /opt/PERO/watchdog
+COPY ./docker/run_watchdog.sh /opt/PERO
+
+# copy config
+COPY ./sample-config/watchdog.ini /etc/pero/
+
+# set workdir
+WORKDIR /opt/PERO
+
+# install dependencies
+RUN apt-get -y update
+RUN apt-get -y upgrade
+RUN sh install_dependencies.sh
+RUN apt-get -y clean
+
+# setup env
+ENV USE_CONFIG=1
+
+# run worker
+CMD ["/bin/sh", "run_watchdog.sh"]
