@@ -17,6 +17,7 @@ from stage_config_manager import ZkConfigManager
 import kazoo
 from kazoo.client import KazooClient
 from kazoo.handlers.threading import KazooTimeoutError
+from kazoo.exceptions import NoNodeError
 
 # setup logging (required by kazoo)
 log_formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
@@ -137,19 +138,28 @@ def main():
     # remove
     if args.rm_mq_servers:
         if args.rm_mq_servers == ['all']:
-            mq_servers = zk_config_manager.zk_get_server_list(constants.WORKER_CONFIG_MQ_SERVERS)
+            try:
+                mq_servers = zk_config_manager.zk_get_server_list(constants.WORKER_CONFIG_MQ_SERVERS)
+            except NoNodeError:
+                mq_servers = []
         else:
             mq_servers = cf.server_list(args.rm_mq_servers)
         zk_config_manager.zk_delete_server_list(mq_servers, constants.WORKER_CONFIG_MQ_SERVERS)
     if args.rm_ftp_servers:
         if args.rm_ftp_servers == ['all']:
-            ftp_servers = zk_config_manager.zk_get_server_list(constants.WORKER_CONFIG_FTP_SERVERS)
+            try:
+                ftp_servers = zk_config_manager.zk_get_server_list(constants.WORKER_CONFIG_FTP_SERVERS)
+            except NoNodeError:
+                ftp_servers = []
         else:
             ftp_servers = cf.server_list(args.rm_ftp_servers)
         zk_config_manager.zk_delete_server_list(ftp_servers, constants.WORKER_CONFIG_FTP_SERVERS)
     if args.rm_monitoring_servers:
         if args.rm_monitoring_servers == ['all']:
-            monitoring_servers = zk_config_manager.zk_get_server_list(constants.WORKER_CONFIG_MQ_MONITORING_SERVERS)
+            try:
+                monitoring_servers = zk_config_manager.zk_get_server_list(constants.WORKER_CONFIG_MQ_MONITORING_SERVERS)
+            except NoNodeError:
+                monitoring_servers = []
         else:
             monitoring_servers = cf.server_list(args.rm_monitoring_servers)
         zk_config_manager.zk_delete_server_list(monitoring_servers, constants.WORKER_CONFIG_MQ_MONITORING_SERVERS)
@@ -165,15 +175,27 @@ def main():
     # list
     if args.list_mq_servers:
         logger.info('MQ server list:')
-        for server in zk_config_manager.zk_get_server_list(constants.WORKER_CONFIG_MQ_SERVERS):
+        try:
+            mq_servers = zk_config_manager.zk_get_server_list(constants.WORKER_CONFIG_MQ_SERVERS)
+        except NoNodeError:
+            mq_servers = []
+        for server in mq_servers:
             logger.info(cf.host_port_to_string(server))
     if args.list_ftp_servers:
         logger.info('FTP server list:')
-        for server in zk_config_manager.zk_get_server_list(constants.WORKER_CONFIG_FTP_SERVERS):
+        try:
+            ftp_servers = zk_config_manager.zk_get_server_list(constants.WORKER_CONFIG_FTP_SERVERS)
+        except NoNodeError:
+            ftp_servers = []
+        for server in ftp_servers:
             logger.info(cf.host_port_to_string(server))
     if args.list_monitoring_servers:
         logger.info('Monitoring server list:')
-        for server in zk_config_manager.zk_get_server_list(constants.WORKER_CONFIG_MQ_MONITORING_SERVERS):
+        try:
+            monitoring_servers = zk_config_manager.zk_get_server_list(constants.WORKER_CONFIG_MQ_MONITORING_SERVERS)
+        except NoNodeError:
+            monitoring_servers = []
+        for server in monitoring_servers:
             logger.info(cf.host_port_to_string(server))
 
     return 0
