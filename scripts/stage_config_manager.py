@@ -312,7 +312,10 @@ def main():
     zk_config_manager.zk_connect()
     
     # get mq server list
-    mq_servers = zk_config_manager.zk_get_server_list(constants.WORKER_CONFIG_MQ_SERVERS)
+    try:
+        mq_servers = zk_config_manager.zk_get_server_list(constants.WORKER_CONFIG_MQ_SERVERS)
+    except kazoo.exceptions.NoNodeError:
+        mq_servers = []
 
     if not mq_servers:
         logger.error('MQ server list not available!')
