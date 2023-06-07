@@ -277,7 +277,7 @@ class MQConfigManager(MQClient):
         try:
             self.mq_channel.queue_declare(
                 queue=name,
-                arguments={'x-max-priority': 1},
+                arguments={'x-max-priority': 1, 'x-queue-type': 'classic'},
                 durable=True
             )
         except ValueError as e:
