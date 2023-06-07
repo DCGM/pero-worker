@@ -20,7 +20,7 @@ fi
 cmd="${cmd} -z ${ZOOKEEPER_SERVERS:-127.0.0.1}"
 
 # username, password
-cmd="${cmd} -u ${USERNAME:-pero} -n ${PASSWORD:-pero_pass}"
+cmd="${cmd} -u ${USERNAME:-pero} -p ${PASSWORD:-pero_pass}"
 
 # add certificate path
 cmd="${cmd} -e ${CA_CERT:-/etc/pero/certificates/ca.pem}"
