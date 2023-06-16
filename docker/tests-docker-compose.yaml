@@ -1,0 +1,49 @@
+version: '3'
+services:
+  zookeeper:
+    image: zookeeper:latest
+    ports:
+      - 2181:2181
+    volumes:
+      - $ZOOKEEPER_CONFIG/zoo.cfg:/conf/zoo.cfg
+      - $ZOOKEEPER_CONFIG/zk_truststore.jks:/conf/zk_truststore.jks
+      - $ZOOKEEPER_CONFIG/zk_keystore.jks:/conf/zk_keystore.jks
+      - $ZOOKEEPER_CONFIG/java.env:/conf/java.env
+      - $ZOOKEEPER_CONFIG/auth.conf:/conf/auth.conf
+      - $ZOOKEEPER_DATA/data:/data
+      - $ZOOKEEPER_DATA/datalog:/datalog
+    hostname: $HOST_NAME
+    networks:
+      pero_core_net:
+        ipv4_address: 172.26.0.50
+  rabbitmq:
+    image: rabbitmq:management
+    ports:
+      - 5672:5672
+      - 15672:15672
+    volumes:
+      - $RABBITMQ_CONFIG/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf
+      - $RABBITMQ_CONFIG/certs:/etc/rabbitmq/certs
+      - $RABBITMQ_DATA:/var/lib/rabbitmq
+    hostname: $HOST_NAME
+    networks:
+      pero_core_net:
+        ipv4_address: 172.26.0.51
+  sftp:
+    image: atmoz/sftp:alpine
+    ports:
+      - 2222:22
+    volumes:
+      - $SFTP_DATA:/home/$USERNAME
+    hostname: $HOST_NAME
+    networks:
+      pero_core_net:
+        ipv4_address: 172.26.0.52
+    command: $USERNAME:$PASSWORD
+
+networks:
+  pero_core_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: "172.26.0.0/16"
