@@ -346,6 +346,8 @@ def main():
             sftp.sftp_connect()
             sftp.sftp_ensure_dir(os.path.split(args.remote_path)[0])
             sftp.sftp_put(args.file, args.remote_path)
+        elif args.file:
+            logger.warning('File upload location (\'--remote-path\') not specified!')
 
         if args.name:
             # get config version

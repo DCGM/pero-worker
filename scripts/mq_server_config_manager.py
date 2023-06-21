@@ -352,12 +352,23 @@ class MQManagementClient:
             if tag not in self.supported_tags:
                 raise ValueError(f'Unsupported user tag: {tag}!')
         
-        message = dict()
+        # get user from MQ server
+        try:
+            message = json.loads(self.get_user_details(name))
+        except ConnectionError:
+            message = dict()
 
+        # set new user password and remove the old one
         if password:
             message['password'] = password
+            if 'password_hash' in message:
+                del message['password_hash']
+            if 'hashing_algorithm' in message:
+                del message['hashing_algorithm']
         
-        message['tags'] = tags
+        # set new user tags
+        if 'tags' not in message or tags:
+            message['tags'] = tags
 
         self.request_to_all_servers(
             'PUT',
