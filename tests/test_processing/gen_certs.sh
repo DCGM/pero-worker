@@ -21,24 +21,24 @@ openssl req -new -x509 -sha256 \
         -passin file:"$OUTPUT_FOLDER"/ca-key-passwd.txt
 
 # generate rabbitmq key and certificate signing request
-openssl genrsa -out "$OUTPUT_FOLDER"/rabbitmq-server-key.pem 4096
+openssl genrsa -out "$OUTPUT_FOLDER"/rabbit-server-key.pem 4096
 openssl req -new -sha256 \
         -subj "/CN=pero-server" \
-        -key "$OUTPUT_FOLDER"/rabbitmq-server-key.pem \
-        -out "$OUTPUT_FOLDER"/rabbitmq-server-cert.csr
+        -key "$OUTPUT_FOLDER"/rabbit-server-key.pem \
+        -out "$OUTPUT_FOLDER"/rabbit-server-cert.csr
 
 # set additional server properties
-echo "subjectAltName=IP:172.26.0.51" > "$OUTPUT_FOLDER"/rabbitmq-extfile.cnf
-echo extendedKeyUsage = serverAuth >> "$OUTPUT_FOLDER"/rabbitmq-extfile.cnf
+echo "subjectAltName=IP:172.26.0.51" > "$OUTPUT_FOLDER"/rabbit-extfile.cnf
+echo extendedKeyUsage = serverAuth >> "$OUTPUT_FOLDER"/rabbit-extfile.cnf
 
 # generate rabbitmq server certificate
 openssl x509 -req -sha256 \
         -days 3650 \
-        -in "$OUTPUT_FOLDER"/rabbitmq-server-cert.csr \
+        -in "$OUTPUT_FOLDER"/rabbit-server-cert.csr \
         -CA "$OUTPUT_FOLDER"/ca.pem \
         -CAkey "$OUTPUT_FOLDER"/ca-key.pem \
-        -out "$OUTPUT_FOLDER"/rabbitmq-server-cert.pem \
-        -extfile "$OUTPUT_FOLDER"/rabbitmq-extfile.cnf \
+        -out "$OUTPUT_FOLDER"/rabbit-server-cert.pem \
+        -extfile "$OUTPUT_FOLDER"/rabbit-extfile.cnf \
         -passin file:"$OUTPUT_FOLDER"/ca-key-passwd.txt \
         -CAcreateserial
 

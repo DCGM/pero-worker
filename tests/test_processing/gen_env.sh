@@ -1,0 +1,22 @@
+#!/bin/sh
+
+OUTPUT_DIR="$(pwd)"
+OUTPUT_FILE="$OUTPUT_DIR/test.env"
+
+echo '# environment variables for processing test' > "$OUTPUT_FILE"
+echo >> "$OUTPUT_FILE"
+echo "ZOOKEEPER_CONFIG=$OUTPUT_DIR/config/zookeeper" >> "$OUTPUT_FILE"
+echo "Zookeeper_DATA=$OUTPUT_DIR/data/zookeeper" >> "$OUTPUT_FILE"
+echo >> "$OUTPUT_FILE"
+echo "RABBITMQ_CONFIG=$OUTPUT_DIR/config/rabbitmq" >> "$OUTPUT_FILE"
+echo "RABBITMQ_DATA=$OUTPUT_DIR/data/rabbitmq" >> "$OUTPUT_FILE"
+echo >> "$OUTPUT_FILE"
+echo "SFTP_DATA=$OUTPUT_DIR/data/sftp" >> "$OUTPUT_FILE"
+echo >> "$OUTPUT_FILE"
+echo "USERNAME=pero" >> "$OUTPUT_FILE"
+echo "PASSWORD=pero_pass" >> "$OUTPUT_FILE"
+echo >> "$OUTPUT_FILE"
+echo '# Uses HOST_NAME instead of HOSTNAME variable' >> "$OUTPUT_FILE"
+echo '# to avoid conflict with bash variable' >> "$OUTPUT_FILE"
+echo "HOST_NAME=$(hostname)" >> "$OUTPUT_FILE"
+echo >> "$OUTPUT_FILE"
