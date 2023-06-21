@@ -39,7 +39,7 @@ services:
     networks:
       pero_core_net:
         ipv4_address: 172.26.0.52
-    command: $USERNAME:$PASSWORD
+    command: $USERNAME:$PASSWORD:::pero
 
 networks:
   pero_core_net:

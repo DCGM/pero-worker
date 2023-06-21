@@ -14,6 +14,7 @@ import worker_functions.connection_aux_functions as cf
 import worker_functions.constants as constants
 from worker_functions.mq_client import MQClient
 from worker_functions.zk_client import ZkClient
+from worker_functions.sftp_client import SFTP_Client
 
 # MQ
 import pika
@@ -98,7 +99,7 @@ def parse_args():
     )
     parser.add_argument(
         '-r', '--remote-path',
-        help='Path to remote OCR config file on FTP server.'
+        help='Path to remote OCR config file on FTP server. Removes the file if used with \'-d\' option.'
     )
     parser.add_argument(
         '-n', '--name',
@@ -111,8 +112,7 @@ def parse_args():
     )
     parser.add_argument(
         '-f', '--file',
-        help='File to upload to FTP server. (For usage with \'--remote-path\')',
-        action='append'
+        help='File to upload to FTP server. (For usage with \'--remote-path\')'
     )
     parser.add_argument(
         '-s', '--show',
@@ -186,6 +186,16 @@ class ZkConfigManager(ZkClient):
             raise
         return server_list
     
+    def zk_get_config_path(self, stage):
+        """
+        Returns path to additional config on ftp server if configured, empty string otherwise.
+        :param stage: stage to get config path for
+        :return: path to config on ftp server as string
+        """
+        if self.zk.exists(constants.QUEUE_CONFIG_PATH_TEMPLATE.format(queue_name = stage)):
+            return self.zk.get(constants.QUEUE_CONFIG_PATH_TEMPLATE.format(queue_name = stage))[0].decode('utf-8')
+        return ''
+    
     def zk_show_config(self, stage):
         if self.zk.exists(constants.QUEUE_TEMPLATE.format(queue_name = stage)):
             self.logger.info(f'Stage {stage} configuration:')
@@ -257,7 +267,10 @@ class ZkConfigManager(ZkClient):
     
     def zk_delete_config(self, stage):
         if self.zk.exists(constants.QUEUE_TEMPLATE.format(queue_name = stage)):
-            self.zk.delete(constants.QUEUE_TEMPLATE.format(queue_name = stage))
+            self.zk.delete(
+                path = constants.QUEUE_TEMPLATE.format(queue_name = stage),
+                recursive = True
+            )
             self.logger.info('Configuration deleted successfully!')
 
 class MQConfigManager(MQClient):
@@ -296,9 +309,6 @@ class MQConfigManager(MQClient):
 def main():
     args = parse_args()
 
-    if args.file:
-        raise NotImplemented('Uploading file to SFTP is not supported yet, please upload file manually!')
-
     # get zookeeper server list
     zookeeper_servers = cf.zk_server_list(args.zookeeper)
     if args.zookeeper_list:
@@ -311,6 +321,9 @@ def main():
     # get mq server list
     mq_servers = zk_config_manager.zk_get_server_list(constants.WORKER_CONFIG_MQ_SERVERS)
 
+    # get ftp server list
+    ftp_servers = zk_config_manager.zk_get_server_list(constants.WORKER_CONFIG_FTP_SERVERS)
+
     if not mq_servers:
         logger.error('MQ server list not available!')
         return 1
@@ -319,7 +332,21 @@ def main():
     mq_config_manager = MQConfigManager(mq_servers, username = args.username, password = args.password, ca_cert = args.ca_cert)
     mq_config_manager.mq_connect()
 
+    # init sftp client
+    sftp = SFTP_Client(
+        sftp_servers=ftp_servers,
+        username=args.username,
+        password=args.password,
+        logger=logger
+    )
+
     if not args.delete:
+        if args.file and args.remote_path:
+            # upload file to sftp
+            sftp.sftp_connect()
+            sftp.sftp_ensure_dir(os.path.split(args.remote_path)[0])
+            sftp.sftp_put(args.file, args.remote_path)
+
         if args.name:
             # get config version
             if args.version == 'now' or not args.version:
@@ -357,13 +384,22 @@ def main():
             mq_config_manager.mq_create_queue(args.name)
     
     else:
+        remote_path = ''
         if args.name:
             # delete configuration
             if not args.keep_config:
+                remote_path = zk_config_manager.zk_get_config_path(args.name)
                 zk_config_manager.zk_delete_config(args.name)
             
             # delete queue
             mq_config_manager.mq_delete_queue(args.name)
+        
+        if args.remote_path or remote_path:
+            if not remote_path:
+                remote_path = args.remote_path
+            sftp.sftp_connect()
+            sftp.sftp_remove_file(remote_path)
+            sftp.sftp_remove_empty_dir(os.path.split(remote_path)[0])
 
     if args.list:
         zk_config_manager.zk_list_stages()
