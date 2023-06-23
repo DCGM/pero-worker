@@ -144,6 +144,14 @@ class ZkConfigManager(ZkClient):
     """
 
     def __init__(self, zk_servers, username='', password='', ca_cert=None, logger = logging.getLogger(__name__)):
+        """
+        :param zk_servers: list of zookeeper servers as string, servers are separated by comma
+                           (for example '1.2.3.4:2181,example.com,example2.com:123')
+        :param username: zookeeper authentication username
+        :param password: zookeeper authentication password
+        :param ca_cert: CA certificate to validate server identity
+        :param logger: logger instance to use for logging
+        """
         super().__init__(zk_servers, username=username, password=password, ca_cert=ca_cert, logger=logger)
 
     def __del__(self):
@@ -197,6 +205,10 @@ class ZkConfigManager(ZkClient):
         return ''
     
     def zk_show_config(self, stage):
+        """
+        Logs via logger configuration of stage present in zookeeper.
+        :param stage: stage name
+        """
         if self.zk.exists(constants.QUEUE_TEMPLATE.format(queue_name = stage)):
             self.logger.info(f'Stage {stage} configuration:')
             ocr_config = ''
@@ -222,6 +234,9 @@ class ZkConfigManager(ZkClient):
             self.logger.info(f'Stage {stage} is not configured!')
     
     def zk_list_stages(self):
+        """
+        Logs via logger names of stages configured in zookeeper.
+        """
         if self.zk.exists(constants.QUEUE):
             stages = self.zk.get_children(constants.QUEUE)
             self.logger.info('Configured stages:')
@@ -229,6 +244,11 @@ class ZkConfigManager(ZkClient):
                 self.logger.info(stage)
     
     def zk_upload_stage_config(self, stage, config):
+        """
+        Uploads stage configuration to zookeeper and creates all necessary nodes.
+        :param stage: name of the stage
+        :param config: opened configuration file
+        """
         self.zk.ensure_path(constants.QUEUE_CONFIG_TEMPLATE.format(queue_name = stage))
         self.zk.ensure_path(constants.QUEUE_CONFIG_PATH_TEMPLATE.format(queue_name = stage))
         self.zk.set(constants.QUEUE_CONFIG_TEMPLATE.format(queue_name = stage), config.read().encode('utf-8'))
@@ -245,6 +265,11 @@ class ZkConfigManager(ZkClient):
             )
     
     def zk_upload_stage_config_version(self, stage, config_version):
+        """
+        Changes stage's config version in zookeeper.
+        :param stage: stage name
+        :param config_version: new config version
+        """
         self.zk.ensure_path(constants.QUEUE_CONFIG_VERSION_TEMPLATE.format(queue_name = stage))
         self.zk.set(
             path=constants.QUEUE_CONFIG_VERSION_TEMPLATE.format(queue_name = stage),
@@ -252,6 +277,11 @@ class ZkConfigManager(ZkClient):
         )
 
     def zk_upload_remote_config_path(self, stage, remote_path):
+        """
+        Changes SFTP OCR path in zookeeper.
+        :param stage: stage name
+        :param remote_path: new path to OCR model
+        """
         self.zk.ensure_path(constants.QUEUE_CONFIG_PATH_TEMPLATE.format(queue_name = stage))
         self.zk.set(
             path=constants.QUEUE_CONFIG_PATH_TEMPLATE.format(queue_name = stage),
@@ -259,6 +289,11 @@ class ZkConfigManager(ZkClient):
         )
     
     def zk_upload_priority(self, stage, priority):
+        """
+        Changes administrative priority of stage's queue.
+        :param stage: stage name
+        :param priority: stage priority
+        """
         self.zk.ensure_path(constants.QUEUE_CONFIG_ADMINISTRATIVE_PRIORITY_TEMPLATE.format(queue_name = stage))
         self.zk.set(
             path=constants.QUEUE_CONFIG_ADMINISTRATIVE_PRIORITY_TEMPLATE.format(queue_name = stage),
@@ -266,6 +301,10 @@ class ZkConfigManager(ZkClient):
         )
     
     def zk_delete_config(self, stage):
+        """
+        Removes stage configuration from zookeeper.
+        :param stage: stage name
+        """
         if self.zk.exists(constants.QUEUE_TEMPLATE.format(queue_name = stage)):
             self.zk.delete(
                 path = constants.QUEUE_TEMPLATE.format(queue_name = stage),
@@ -278,12 +317,25 @@ class MQConfigManager(MQClient):
     Message broker configuration manager
     """
     def __init__(self, mq_servers, username='', password='', ca_cert=None, logger = logging.getLogger(__name__)):
+        """
+        :param mq_servers: list of mq servers to use, each server is a dicrionary with fields host and port.
+                           If port is None, default MQ port is used.
+                           (example: [{'host':'123.123.123.123', 'port':4321}, {'host': 'example.com', 'port': None}])
+        :param username: MQ authentication username
+        :param password: MQ authentication password
+        :param ca_cert: CA certificate for server identity verification
+        :param logger: logger instance to use for logging
+        """
         super().__init__(mq_servers, username=username, password=password, ca_cert=ca_cert, logger=logger)
 
     def __del__(self):
         super().__del__()
     
     def mq_create_queue(self, name):
+        """
+        Creates message queue for stage given by name.
+        :param name: name of the stage / queue to create
+        """
         try:
             self.mq_channel.queue_declare(
                 queue=name,
@@ -299,6 +351,10 @@ class MQConfigManager(MQClient):
             self.logger.info('Queue for stage {} created succesfully'.format(name))
     
     def mq_delete_queue(self, name):
+        """
+        Deletes stage queue given by name.
+        :param name: name of the stage / queue to delete
+        """
         try:
             self.mq_channel.queue_delete(queue=name)
         except ValueError:

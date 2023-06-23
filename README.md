@@ -338,6 +338,55 @@ python scripts/publisher.py --directory output/directory/path --download out
 
 If you want to keep downloading images from ``out`` stage, add ``--keep-running`` argument at the end of the command above.
 
+## Using stage manager programmatically
+
+Stages in the system can be defined using ``stage_config_manager.py`` script.
+However if you want to write your own configuration manager, you can use object defined in this script to do so.
+
+For parsing host:port to correct format library function from ``/libs/worker_functions/connection_aux_functions.py`` can be used. To create zookeeper server list from list of items in format 'host:port' use ``zookeeper_server_list`` function, for rabbitmq use ``server_list`` function.
+
+Script contains ``ZkConfigManager`` class for manipulating configuration in zookeeper.
+Example of creating instance:
+
+```
+zk_config_manager = ZkConfigManager(
+  zk_servers='server1:2181,server2',
+  username='pero',
+  password='pero_pass',
+  ca_cert='path/to/ca/cert.pem',
+  logger=logging.getLogger(__name__)
+)
+```
+
+For configuring queue for given stage, ``MQConfigManager`` instance is needed.
+One can be created as so:
+
+```
+mq_config_manager = MQConfigManager(
+  mq_servers=[{'host': 'server1', 'port': 1234}, {'host': '1.2.3.4', 'port': None}],
+  username='pero',
+  password='pero_pass',
+  ca_cert='path/to/ca/cert.pem',
+  logger=logging.getLogger(__name__)
+)
+```
+
+To manipulate files on SFTP, use ``SFTP_Client`` located in ``/libs/worker_functions/``.
+Instance can be created as this:
+
+```
+sftp_client = SFTP_Client(
+  sftp_servers=[{'host': 'server1', 'port': 1234}, {'host': '1.2.3.4', 'port': None}],
+  username='pero',
+  password='pero_pass',
+  logger=logging.getLogger(__name__)
+)
+```
+
+SFTP client does not use certificate for server verification.
+Server list format is the same as for MQ configuration manager.
+
+
 ## Additional info
 
 System was tested with these versions of libraries:
