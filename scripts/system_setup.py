@@ -537,18 +537,6 @@ def main():
         with open(os.path.join(output_dir, f'{super_user}.pass'), 'w') as pf:
             pf.write(super_password)
     
-    # DEBUG
-    print(f'output dir: {output_dir}')
-    print(f'data dir: {data_dir}')
-    print(f'mq server: {mq_server}')
-    print(f'zk server: {zk_server}')
-    print(f'sftp server: {sftp_server}')
-    print(f'mq management server: {mq_management_server}')
-    print(f'username: {username}')
-    print(f'password: {password}')
-    print(f'super_user: {super_user}')
-    print(f'super_password: {super_password}')
-
     # generate certificates for selected services
     certificate_dir = os.path.join(output_dir, 'certificates')
     generate_certificates(
@@ -644,7 +632,8 @@ def main():
     # run services
     run_services(env=os.path.join(output_dir, 'docker.env'))
 
-    # wait for services to boot up
+    # wait for services to start
+    print('Waiting for services to start up.')
     time.sleep(10)
 
     # apply services runtime configuration
