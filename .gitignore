@@ -131,6 +131,6 @@ dmypy.json
 # VSCode / VSCodium config
 .vscode
 
-# Folder with local configuration
+# Folder with local configuration and data
 config/
-
+data/
