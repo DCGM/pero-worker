@@ -14,6 +14,8 @@ ZK_TRUSTSTORE_PASSWORD=zk_truststore_pass
 ZOOKEEPER_HOSTS=
 MQ_HOSTS=
 
+USE_DOCKERIZED_KEYTOOL="$(command -v keytool)"
+
 # checks if given string is valid ip address
 check_ip(){
 	# ipv4 checking
@@ -257,25 +259,61 @@ if [ -n "$ZOOKEEPER_HOSTS" ]; then
             -caname root \
             -password pass:"$ZK_KEYSTORE_PASSWORD"
 
-    # create zookeeper JKS keystore from the PKCS12
-    keytool -importkeystore \
-            -deststorepass "$ZK_KEYSTORE_PASSWORD" \
-            -destkeystore "$CERTIFICATES_OUTPUT_DIR"/zk_keystore.jks \
-            -srckeystore "$CERTIFICATES_OUTPUT_DIR"/zookeeper-server.p12 \
-            -srcstoretype PKCS12 \
-            -srcstorepass "$ZK_KEYSTORE_PASSWORD" \
-            -alias zk_server \
-            -deststoretype JKS \
-            -noprompt
+    # check if keytool is installed
+    if [ -n "$USE_DOCKERIZED_KEYTOOL" ]; then
+        # create zookeeper JKS keystore from the PKCS12
+        keytool -importkeystore \
+                -deststorepass "$ZK_KEYSTORE_PASSWORD" \
+                -destkeystore "$CERTIFICATES_OUTPUT_DIR"/zk_keystore.jks \
+                -srckeystore "$CERTIFICATES_OUTPUT_DIR"/zookeeper-server.p12 \
+                -srcstoretype PKCS12 \
+                -srcstorepass "$ZK_KEYSTORE_PASSWORD" \
+                -alias zk_server \
+                -deststoretype JKS \
+                -noprompt
 
-    # create zookeeper JKS trust store with CA cert
-    keytool -importcert \
-            -alias ca_cert \
-            -file "$CA_CERT" \
-            -keystore "$CERTIFICATES_OUTPUT_DIR"/zk_truststore.jks \
-            -storepass "$ZK_TRUSTSTORE_PASSWORD" \
-            -storetype JKS \
-            -noprompt
+        # create zookeeper JKS trust store with CA cert
+        keytool -importcert \
+                -alias ca_cert \
+                -file "$CA_CERT" \
+                -keystore "$CERTIFICATES_OUTPUT_DIR"/zk_truststore.jks \
+                -storepass "$ZK_TRUSTSTORE_PASSWORD" \
+                -storetype JKS \
+                -noprompt
+    else # run keytool in container when not locally installed
+        # create zookeeper JKS keystore from the PKCS12
+        docker run --rm --tty --interactive \
+            --volume "$CERTIFICATES_OUTPUT_DIR":/cert_folder \
+            zookeeper:latest \
+            keytool -importkeystore \
+                    -deststorepass "$ZK_KEYSTORE_PASSWORD" \
+                    -destkeystore /cert_folder/zk_keystore.jks \
+                    -srckeystore /cert_folder/zookeeper-server.p12 \
+                    -srcstoretype PKCS12 \
+                    -srcstorepass "$ZK_KEYSTORE_PASSWORD" \
+                    -alias zk_server \
+                    -deststoretype JKS \
+                    -noprompt
+
+        # create zookeeper JKS trust store with CA cert
+        docker run --rm --tty --interactive \
+            --volume "$CERTIFICATES_OUTPUT_DIR":/cert_folder \
+            --volume "$CA_CERT":/ca.pem \
+            zookeeper:latest \
+            keytool -importcert \
+                    -alias ca_cert \
+                    -file /ca.pem \
+                    -keystore /cert_folder/zk_truststore.jks \
+                    -storepass "$ZK_TRUSTSTORE_PASSWORD" \
+                    -storetype JKS \
+                    -noprompt
+        
+        # change permissions from root to user running the container
+        docker run --rm --tty --interactive \
+            --volume ""$CERTIFICATES_OUTPUT_DIR":/cert_folder" \
+            zookeeper:latest \
+            chown -R "$(id -u):$(id -g)" /cert_folder
+    fi
 fi
 
 # add read permissions to group and others to prevent

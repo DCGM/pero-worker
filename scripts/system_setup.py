@@ -13,7 +13,7 @@ import random
 import shutil
 import time
 
-import libs.worker_functions.connection_aux_functions as cf
+import worker_functions.connection_aux_functions as cf
 
 # path to the system setup script directory
 file_dir_path = os.path.dirname(os.path.realpath(__file__))
