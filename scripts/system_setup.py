@@ -176,7 +176,7 @@ def generate_password() -> str:
     Generates 64 chars long password.
     :return: password
     """
-    chars = string.ascii_letters + string.digits + '!@#$%^&*()'
+    chars = string.ascii_letters + string.digits
     length = 64
     passwd = ''
     for i in range(0, length):
