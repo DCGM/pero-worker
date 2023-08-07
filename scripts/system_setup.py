@@ -622,7 +622,7 @@ def main():
     )
 
     # generate configuration for worker, watchdog, log_daemon
-    log_dir = os.path.join(output_dir, 'logs')
+    log_dir = os.path.join(data_dir, 'logs')
     os.mkdir(log_dir)
     generate_client_configs(
         output_dir=output_dir,
