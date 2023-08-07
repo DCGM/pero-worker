@@ -5,8 +5,7 @@ run_app () {
         return 1
     fi
 
-    . ./.venv/bin/activate
-    python ./log_daemon/log_daemon.py ${1}
+    python3 ./log_daemon/log_daemon.py ${1}
 }
 
 cmd=""

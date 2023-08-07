@@ -1,0 +1,42 @@
+# General settings
+dataDir=/data
+dataLogDir=/datalog
+tickTime=2000
+initLimit=5
+syncLimit=2
+autopurge.snapRetainCount=3
+autopurge.purgeInterval=0
+maxClientCnxns=60
+standaloneEnabled=true
+admin.enableServer=true
+
+# port config
+# this port should be only for localhost client connection as it is not encrypted
+clientPort={{zookeeper_port}}
+secureClientPort={{zookeeper_secure_port}}
+server.1=localhost:2888:3888
+
+# General ssl settings
+serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
+
+# Quorum ssl settings
+sslQuorum=true
+ssl.quorum.keyStore.location=/conf/zk_keystore.jks
+ssl.quorum.keyStore.password={{ zookeeper_keystore_password }}
+ssl.quorum.trustStore.location=/conf/zk_truststore.jks
+ssl.quorum.trustStore.password={{ zookeeper_truststore_password }}
+
+# Client ssl settings
+ssl.keyStore.location=/conf/zk_keystore.jks
+ssl.keyStore.password={{ zookeeper_keystore_password }}
+ssl.trustStore.location=/conf/zk_truststore.jks
+ssl.trustStore.password={{ zookeeper_truststore_password }}
+
+# Enable client to connect without certificate (disable mutual authentication)
+ssl.clientAuth=none
+
+# Authentication using password
+authProvider.sasl=org.apache.zookeeper.server.auth.SASLAuthenticationProvider
+enforce.auth.enabled=true
+enforce.auth.schemes=sasl
+

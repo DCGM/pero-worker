@@ -2,7 +2,7 @@
 listeners.tcp = none
 
 # Enable AMQPS
-listeners.ssl.default  = 5672
+listeners.ssl.default  = {{ amqp_port }}
 ssl_options.cacertfile = /etc/rabbitmq/certs/ca.pem
 ssl_options.certfile   = /etc/rabbitmq/certs/rabbit-server-cert.pem
 ssl_options.keyfile    = /etc/rabbitmq/certs/rabbit-server-key.pem
@@ -10,7 +10,7 @@ ssl_options.verify     = verify_peer
 ssl_options.fail_if_no_peer_cert = false
 
 # Enable HTTPS (management plugin)
-management.listener.port = 15672
+management.listener.port = {{ management_port }}
 management.listener.ssl = true
 management.listener.ssl_opts.cacertfile = /etc/rabbitmq/certs/ca.pem
 management.listener.ssl_opts.certfile = /etc/rabbitmq/certs/rabbit-server-cert.pem

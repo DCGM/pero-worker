@@ -6,3 +6,4 @@ protobuf
 python-magic
 requests
 paramiko
+jinja2

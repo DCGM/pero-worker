@@ -5,8 +5,7 @@ run_app () {
         return 1
     fi
 
-    . ./.venv/bin/activate
-    python ./worker/run_worker.py ${1}
+    python3 ./worker/run_worker.py ${1}
 }
 
 cmd=""

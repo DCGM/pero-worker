@@ -5,8 +5,7 @@ run_app () {
         return 1
     fi
 
-    . ./.venv/bin/activate
-    python ./watchdog/worker_watchdog.py ${1}
+    python3 ./watchdog/worker_watchdog.py ${1}
 }
 
 cmd=""

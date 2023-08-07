@@ -6,6 +6,7 @@ protobuf
 python-magic
 requests
 paramiko
+jinja2
 
 # pero OCR dependencies
 numpy

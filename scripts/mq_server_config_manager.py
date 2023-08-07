@@ -226,13 +226,14 @@ class MQManagementClient:
                     servers = failed
                 )
     
-    def request_to_any_mq_server(self, method, url, request=''):
+    def request_to_any_mq_server(self, method, url, request='', silent=False):
         """
         Sends request to MQ management/monitoring servers and returns response
         of the first server that responeded.
         :param method: HTTP method to use
         :param url: url to send request to
         :param request: request to send in the message
+        :param silent: do not print error if status code is not 'ok'
         :raise: ConnectionError if no server responded with OK error code
         """
         response = None
@@ -257,7 +258,7 @@ class MQManagementClient:
                     .format(traceback.format_exc())
                 )
             else:
-                if not response.ok:
+                if not response.ok and not silent:
                     self.logger.error(
                         'Failed to get response from server {}'
                         .format(cf.host_port_to_string(server))
@@ -326,10 +327,11 @@ class MQManagementClient:
         """
         return self.request_to_any_mq_server('GET', self.users)
 
-    def get_user_details(self, user: str):
+    def get_user_details(self, user: str, silent: bool = False):
         """
         Get details of given user.
         :param user: user to show
+        :param silent: do not print error if error code is not 'ok'
         :return user details serialized to JSON
         """
         return self.request_to_any_mq_server(
@@ -337,7 +339,8 @@ class MQManagementClient:
             self.user_by_name.format(
                 name = user,
                 server = '{server}'
-            )
+            ),
+            silent=silent
         )
 
     def add_user(self, name: str, password: str, tags: list):
@@ -354,7 +357,7 @@ class MQManagementClient:
         
         # get user from MQ server
         try:
-            message = json.loads(self.get_user_details(name))
+            message = json.loads(self.get_user_details(user=name, silent=True))
         except ConnectionError:
             message = dict()
 
