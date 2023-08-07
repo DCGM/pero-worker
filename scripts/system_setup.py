@@ -275,7 +275,8 @@ def generate_docker_env(
     zookeeper_secure_port,
     mq_amqp_port,
     mq_management_port,
-    sftp_port
+    sftp_port,
+    username
 ):
     """
     Generates docker compose environment variables file.
@@ -291,6 +292,7 @@ def generate_docker_env(
     :param mq_amqp_port: AMQP port to expose
     :param mq_management_port: message broker management port to expose
     :param sftp_port: SFTP port to expose for remote connection
+    :param username: SFTP user name
     """
     env = jinja2.Environment(
         loader=jinja2.FileSystemLoader('templates'),
@@ -309,7 +311,8 @@ def generate_docker_env(
             zookeeper_secure_port=zookeeper_secure_port,
             mq_amqp_port=mq_amqp_port,
             mq_management_port=mq_management_port,
-            sftp_port=sftp_port
+            sftp_port=sftp_port,
+            username=username
         ))
     
 def generate_client_configs(
@@ -614,7 +617,8 @@ def main():
         zookeeper_secure_port=args.zookeeper_secure_port,
         mq_amqp_port=args.mq_amqp_port,
         mq_management_port=args.mq_management_port,
-        sftp_port=args.sftp_port
+        sftp_port=args.sftp_port,
+        username=username
     )
 
     # generate configuration for worker, watchdog, log_daemon

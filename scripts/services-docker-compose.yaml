@@ -35,7 +35,7 @@ services:
       - $SFTP_PORT:22
     volumes:
       - $SFTP_CONFIG/users.conf:/etc/sftp/users.conf:ro
-      - $SFTP_DATA:/home
+      - $SFTP_DATA:/home/$USERNAME
     hostname: $HOST_NAME
     networks:
       pero_core_net:
