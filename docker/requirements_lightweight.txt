@@ -1,0 +1,9 @@
+# processing system dependencies
+kazoo
+pure-sasl
+pika
+protobuf
+python-magic
+requests
+paramiko
+jinja2

@@ -14,6 +14,7 @@ import worker_functions.connection_aux_functions as cf
 import worker_functions.constants as constants
 from worker_functions.mq_client import MQClient
 from worker_functions.zk_client import ZkClient
+from worker_functions.sftp_client import SFTP_Client
 
 # MQ
 import pika
@@ -98,7 +99,7 @@ def parse_args():
     )
     parser.add_argument(
         '-r', '--remote-path',
-        help='Path to remote OCR config file on FTP server.'
+        help='Path to remote OCR config file on FTP server. Removes the file if used with \'-d\' option.'
     )
     parser.add_argument(
         '-n', '--name',
@@ -111,8 +112,7 @@ def parse_args():
     )
     parser.add_argument(
         '-f', '--file',
-        help='File to upload to FTP server. (For usage with \'--remote-path\')',
-        action='append'
+        help='File to upload to FTP server. (For usage with \'--remote-path\')'
     )
     parser.add_argument(
         '-s', '--show',
@@ -144,6 +144,14 @@ class ZkConfigManager(ZkClient):
     """
 
     def __init__(self, zk_servers, username='', password='', ca_cert=None, logger = logging.getLogger(__name__)):
+        """
+        :param zk_servers: list of zookeeper servers as string, servers are separated by comma
+                           (for example '1.2.3.4:2181,example.com,example2.com:123')
+        :param username: zookeeper authentication username
+        :param password: zookeeper authentication password
+        :param ca_cert: CA certificate to validate server identity
+        :param logger: logger instance to use for logging
+        """
         super().__init__(zk_servers, username=username, password=password, ca_cert=ca_cert, logger=logger)
 
     def __del__(self):
@@ -186,7 +194,21 @@ class ZkConfigManager(ZkClient):
             raise
         return server_list
     
+    def zk_get_config_path(self, stage):
+        """
+        Returns path to additional config on ftp server if configured, empty string otherwise.
+        :param stage: stage to get config path for
+        :return: path to config on ftp server as string
+        """
+        if self.zk.exists(constants.QUEUE_CONFIG_PATH_TEMPLATE.format(queue_name = stage)):
+            return self.zk.get(constants.QUEUE_CONFIG_PATH_TEMPLATE.format(queue_name = stage))[0].decode('utf-8')
+        return ''
+    
     def zk_show_config(self, stage):
+        """
+        Logs via logger configuration of stage present in zookeeper.
+        :param stage: stage name
+        """
         if self.zk.exists(constants.QUEUE_TEMPLATE.format(queue_name = stage)):
             self.logger.info(f'Stage {stage} configuration:')
             ocr_config = ''
@@ -212,6 +234,9 @@ class ZkConfigManager(ZkClient):
             self.logger.info(f'Stage {stage} is not configured!')
     
     def zk_list_stages(self):
+        """
+        Logs via logger names of stages configured in zookeeper.
+        """
         if self.zk.exists(constants.QUEUE):
             stages = self.zk.get_children(constants.QUEUE)
             self.logger.info('Configured stages:')
@@ -219,6 +244,11 @@ class ZkConfigManager(ZkClient):
                 self.logger.info(stage)
     
     def zk_upload_stage_config(self, stage, config):
+        """
+        Uploads stage configuration to zookeeper and creates all necessary nodes.
+        :param stage: name of the stage
+        :param config: opened configuration file
+        """
         self.zk.ensure_path(constants.QUEUE_CONFIG_TEMPLATE.format(queue_name = stage))
         self.zk.ensure_path(constants.QUEUE_CONFIG_PATH_TEMPLATE.format(queue_name = stage))
         self.zk.set(constants.QUEUE_CONFIG_TEMPLATE.format(queue_name = stage), config.read().encode('utf-8'))
@@ -235,6 +265,11 @@ class ZkConfigManager(ZkClient):
             )
     
     def zk_upload_stage_config_version(self, stage, config_version):
+        """
+        Changes stage's config version in zookeeper.
+        :param stage: stage name
+        :param config_version: new config version
+        """
         self.zk.ensure_path(constants.QUEUE_CONFIG_VERSION_TEMPLATE.format(queue_name = stage))
         self.zk.set(
             path=constants.QUEUE_CONFIG_VERSION_TEMPLATE.format(queue_name = stage),
@@ -242,6 +277,11 @@ class ZkConfigManager(ZkClient):
         )
 
     def zk_upload_remote_config_path(self, stage, remote_path):
+        """
+        Changes SFTP OCR path in zookeeper.
+        :param stage: stage name
+        :param remote_path: new path to OCR model
+        """
         self.zk.ensure_path(constants.QUEUE_CONFIG_PATH_TEMPLATE.format(queue_name = stage))
         self.zk.set(
             path=constants.QUEUE_CONFIG_PATH_TEMPLATE.format(queue_name = stage),
@@ -249,6 +289,11 @@ class ZkConfigManager(ZkClient):
         )
     
     def zk_upload_priority(self, stage, priority):
+        """
+        Changes administrative priority of stage's queue.
+        :param stage: stage name
+        :param priority: stage priority
+        """
         self.zk.ensure_path(constants.QUEUE_CONFIG_ADMINISTRATIVE_PRIORITY_TEMPLATE.format(queue_name = stage))
         self.zk.set(
             path=constants.QUEUE_CONFIG_ADMINISTRATIVE_PRIORITY_TEMPLATE.format(queue_name = stage),
@@ -256,6 +301,10 @@ class ZkConfigManager(ZkClient):
         )
     
     def zk_delete_config(self, stage):
+        """
+        Removes stage configuration from zookeeper.
+        :param stage: stage name
+        """
         if self.zk.exists(constants.QUEUE_TEMPLATE.format(queue_name = stage)):
             self.zk.delete(
                 path=constants.QUEUE_TEMPLATE.format(queue_name = stage),
@@ -268,12 +317,25 @@ class MQConfigManager(MQClient):
     Message broker configuration manager
     """
     def __init__(self, mq_servers, username='', password='', ca_cert=None, logger = logging.getLogger(__name__)):
+        """
+        :param mq_servers: list of mq servers to use, each server is a dicrionary with fields host and port.
+                           If port is None, default MQ port is used.
+                           (example: [{'host':'123.123.123.123', 'port':4321}, {'host': 'example.com', 'port': None}])
+        :param username: MQ authentication username
+        :param password: MQ authentication password
+        :param ca_cert: CA certificate for server identity verification
+        :param logger: logger instance to use for logging
+        """
         super().__init__(mq_servers, username=username, password=password, ca_cert=ca_cert, logger=logger)
 
     def __del__(self):
         super().__del__()
     
     def mq_create_queue(self, name):
+        """
+        Creates message queue for stage given by name.
+        :param name: name of the stage / queue to create
+        """
         try:
             self.mq_channel.queue_declare(
                 queue=name,
@@ -289,6 +351,10 @@ class MQConfigManager(MQClient):
             self.logger.info('Queue for stage {} created succesfully'.format(name))
     
     def mq_delete_queue(self, name):
+        """
+        Deletes stage queue given by name.
+        :param name: name of the stage / queue to delete
+        """
         try:
             self.mq_channel.queue_delete(queue=name)
         except ValueError:
@@ -298,9 +364,6 @@ class MQConfigManager(MQClient):
 
 def main():
     args = parse_args()
-
-    if args.file:
-        raise NotImplemented('Uploading file to SFTP is not supported yet, please upload file manually!')
 
     # get zookeeper server list
     zookeeper_servers = cf.zk_server_list(args.zookeeper)
@@ -317,6 +380,9 @@ def main():
     except kazoo.exceptions.NoNodeError:
         mq_servers = []
 
+    # get ftp server list
+    ftp_servers = zk_config_manager.zk_get_server_list(constants.WORKER_CONFIG_FTP_SERVERS)
+
     if not mq_servers:
         logger.error('MQ server list not available!')
         return 1
@@ -325,7 +391,23 @@ def main():
     mq_config_manager = MQConfigManager(mq_servers, username = args.username, password = args.password, ca_cert = args.ca_cert)
     mq_config_manager.mq_connect()
 
+    # init sftp client
+    sftp = SFTP_Client(
+        sftp_servers=ftp_servers,
+        username=args.username,
+        password=args.password,
+        logger=logger
+    )
+
     if not args.delete:
+        if args.file and args.remote_path:
+            # upload file to sftp
+            sftp.sftp_connect()
+            sftp.sftp_ensure_dir(os.path.split(args.remote_path)[0])
+            sftp.sftp_put(args.file, args.remote_path)
+        elif args.file:
+            logger.warning('File upload location (\'--remote-path\') not specified!')
+
         if args.name:
             # get config version
             if args.version == 'now' or not args.version:
@@ -363,13 +445,22 @@ def main():
             mq_config_manager.mq_create_queue(args.name)
     
     else:
+        remote_path = ''
         if args.name:
             # delete configuration
             if not args.keep_config:
+                remote_path = zk_config_manager.zk_get_config_path(args.name)
                 zk_config_manager.zk_delete_config(args.name)
             
             # delete queue
             mq_config_manager.mq_delete_queue(args.name)
+        
+        if args.remote_path or remote_path:
+            if not remote_path:
+                remote_path = args.remote_path
+            sftp.sftp_connect()
+            sftp.sftp_remove_file(remote_path)
+            sftp.sftp_remove_empty_dir(os.path.split(remote_path)[0])
 
     if args.list:
         zk_config_manager.zk_list_stages()

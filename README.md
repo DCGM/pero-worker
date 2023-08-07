@@ -3,6 +3,7 @@
 Project contains "worker", "watchdog" and log-daemon for OCR processing system that uses pero-ocr package.
 
 Processing system uses 6 components.
+
 - Worker for processing data
 - Watchdog for task planing and scheduling
 - RabbitMQ message broker for task distribution
@@ -10,7 +11,86 @@ Processing system uses 6 components.
 - SFTP for storing OCR binary files.
 - Central log daemon for receiving logs from workers.
 
-## setup
+## Quick setup
+
+### Building docker image
+
+When worker is used from image full dependencies does not have to be installed. To run worker without container, see `Full setup` section.
+
+First git submodules have to be downloaded.
+
+```
+git submodule init
+git submodule update
+```
+
+Docker images for services can be build using `docker-build-all.sh` script. `pero-ocr` container have to be available for worker container to build correctly. Images can be built from specific commit or without downloading the pero-worker repository at all.
+
+```
+docker build -f docker/Dockerfile.worker -t 'pero-worker' https://github.com/DCGM/pero-worker#<branch-name/commit-hash/tag>
+docker build -f docker/Dockerfile.watchdog -t 'pero-watchdog' https://github.com/DCGM/pero-worker#<branch-name/commit-hash/tag>
+docker build -f docker/Dockerfile.log_daemon -t 'pero-logd' https://github.com/DCGM/pero-worker#<branch-name/commit-hash/tag>
+```
+
+To use service configuration script and control the system, minimal processing system dependencies have to installed. Also python path have to be set to make submodules accessible.
+Or you can use `install_dependencies.sh` to install all dependencies - see `Full setup` section. If you want to build docker images localy using build script, make sure to use it before creating virtual environment. Otherwise it is better to use remote URLs above to prevent copying the python environment into the container.
+
+```
+python3 -m venv .venv
+. ./.venv/bin/activate
+pip install -U pip
+pip install -r docker/requirements_lightweight.txt
+echo 'export PYTHONPATH="$PYTHONPATH:$(dirname $VIRTUAL_ENV)/libs:$(dirname $VIRTUAL_ENV)/pero-ocr"' >> ./.venv/bin/activate
+export PYTHONPATH="$PYTHONPATH:$(dirname $VIRTUAL_ENV)/libs:$(dirname $VIRTUAL_ENV)/pero-ocr"
+```
+
+Now `scripts/system_setup.py` can be used to setup whole system for you on local computer. Script generates configuration files and then runs the core of the processing system (Apache zookeeper, RabbitMQ, sftp server) and applies additional configuration that have to be done after the system is started. Basic usage:
+
+```
+python scripts/system_setup.py -z <ip/hostname to use with zookeeper> -s <ip/hostname to use with RabbitMQ> -f <ip/hostname to use with sftp>
+```
+
+For other options see `python scripts/system_setup.py --help`.
+
+Script generates 2 subdirectories in the project root directory. First directory is `data/` with subdirectories for each core service. Second is `config/` which holds all the generated configuration.
+Core services should be running, which can be verified by viewing the `docker ps --all` output.
+
+Now log daemon, watchdog and worker services can be started and connected to the system. Configurations are available in `config/logd.ini`, `config/watchdog.ini`, `config/worker.ini`.
+To start services run
+
+```
+docker run -d --name pero-logd -v "$(pwd)"/data/logs:/var/log/pero -v "$(pwd)"/config:/etc/pero pero-logd
+docker run -d --name pero-watchdog -v "$(pwd)"/config:/etc/pero pero-watchdog
+docker run -d --name pero-worker -v "$(pwd)"/config:/etc/pero pero-worker
+```
+
+You can also add `--hostname "$(hostname)"` to the worker after the `run` command to pass in computers hostname that will be visible in the logs. Otherwise random hostname will be generated in the docker container.
+
+Next step is to configure processing stages using stage manager:
+
+```
+python scripts/stage_config_manager.py --name ocr_stage_x --config path/to/ocr_stage_x/config.ini --remote-path path/to/additional/data/on/ftp/server.tar.xz --file path/to/data/to/copy/on/ftp/server.tar.xz
+```
+
+And to create output stage for processed data that are ready to be picked up by user.
+
+```
+python scripts/stage_config_manager.py --name out
+```
+
+Base services can be started by:
+
+```
+docker compose -f scripts/services-docker-compose.yaml --env-file config/docker.env up -d
+```
+
+And stopped by:
+
+```
+docker compose -f scripts/services-docker-compose.yaml --env-file config/docker.env down
+```
+
+## Full setup
 
 Docker is used in this example. Please visit https://docs.docker.com/engine/install/ and follow instructions for your operating system.
 Use installation instruction for Apache zookeeper, RabbitMQ and your favourite SFTP server, if you don't want to use docker.
@@ -18,179 +98,196 @@ Use installation instruction for Apache zookeeper, RabbitMQ and your favourite S
 Installation script was tested under Debian 11 and is APT dependent.
 
 Installing requirements and create python venv for the project:
+
 ```
 sh install_dependencies.sh
 ```
 
 Source created virtual environment:
+
 ```
 . ./.venv/bin/activate
 ```
 
-Download pero-ocr to `pero-ocr/` folder and `pero-worker-libs` to libs folder:
+Download pero-ocr to `pero-ocr/` folder and `pero-worker-libs` to libs folder using:
+
 ```
 git submodule init
 git submodule update
 ```
+
 Or do this manually by cloning pero-ocr from https://github.com/DCGM/pero-ocr.git and https://github.com/DCGM/pero-worker-libs.git
 
 ### Generating self-signed certificates for services
 
 1. Generate CA (Certification authority) key for signing and certificate for verification of server certificates (validity is set to 10 years in this example).
-    ```
-    openssl genrsa -aes256 -out ca-key.pem 4096
-    openssl req -new -x509 -sha256 -days 3650 -key ca-key.pem -out ca.pem
-    ```
 
+   ```
+   openssl genrsa -aes256 -out ca-key.pem 4096
+   openssl req -new -x509 -sha256 -days 3650 -key ca-key.pem -out ca.pem
+   ```
 2. Generate server certificate (for RabbitMQ / Zookeeper server).
+
 - Generate server key and certificate signing request
-    ```
-    openssl genrsa -out server-key.pem 4096
-    openssl req -new -sha256 -subj "/CN=server-hostname-or-ip" -key server-key.pem -out server-cert.csr
-    ```
+  ```
+  openssl genrsa -out server-key.pem 4096
+  openssl req -new -sha256 -subj "/CN=server-hostname-or-ip" -key server-key.pem -out server-cert.csr
+  ```
 - Set server additional properties, server identification, usage of the key, etc. to extension file.
-    ```
-    echo "subjectAltName=DNS:hostname.domain,IP:1.2.3.4" >> extfile.cnf
-    echo extendedKeyUsage = serverAuth >> extfile.cnf
-    ```
+  ```
+  echo "subjectAltName=DNS:hostname.domain,IP:1.2.3.4" >> extfile.cnf
+  echo extendedKeyUsage = serverAuth >> extfile.cnf
+  ```
 - Create the signed certificate (validity is set to 10 years in this example).
-    ```
-    openssl x509 -req -sha256 -days 3650 -in server-cert.csr -CA ca.pem -CAkey ca-key.pem -out server-cert.pem -extfile extfile.cnf -CAcreateserial
-    ```
+  ```
+  openssl x509 -req -sha256 -days 3650 -in server-cert.csr -CA ca.pem -CAkey ca-key.pem -out server-cert.pem -extfile extfile.cnf -CAcreateserial
+  ```
 
 3. Configure server to use the certificate.
+
 - RabbitMQ - can be simply set in config file:
-    ```
-    # Disable non-TLS connections
-    listeners.tcp = none
 
-    # Enable AMQPS
-    listeners.ssl.default = 5671
-    ssl_options.cacertfile = /etc/rabbitmq/certs/ca.pem
-    ssl_options.certfile   = /etc/rabbitmq/certs/rabbit-server-cert.pem
-    ssl_options.keyfile    = /etc/rabbitmq/certs/rabbit-server-key.pem
-    ssl_options.verify     = verify_peer
-    # disable mutual authentication (clients does not need to have their own certificates)
-    ssl_options.fail_if_no_peer_cert = false
+  ```
+  # Disable non-TLS connections
+  listeners.tcp = none
 
-    # Enable HTTPS (management console)
-    management.listener.port = 15671
-    management.listener.ssl = true
-    management.listener.ssl_opts.cacertfile = /etc/rabbitmq/certs/ca.pem
-    management.listener.ssl_opts.certfile = /etc/rabbitmq/certs/rabbit-server-cert.pem
-    management.listener.ssl_opts.keyfile = /etc/rabbitmq/certs/rabbit-server-key.pem
-    ```
+  # Enable AMQPS
+  listeners.ssl.default = 5671
+  ssl_options.cacertfile = /etc/rabbitmq/certs/ca.pem
+  ssl_options.certfile   = /etc/rabbitmq/certs/rabbit-server-cert.pem
+  ssl_options.keyfile    = /etc/rabbitmq/certs/rabbit-server-key.pem
+  ssl_options.verify     = verify_peer
+  # disable mutual authentication (clients does not need to have their own certificates)
+  ssl_options.fail_if_no_peer_cert = false
 
+  # Enable HTTPS (management console)
+  management.listener.port = 15671
+  management.listener.ssl = true
+  management.listener.ssl_opts.cacertfile = /etc/rabbitmq/certs/ca.pem
+  management.listener.ssl_opts.certfile = /etc/rabbitmq/certs/rabbit-server-cert.pem
+  management.listener.ssl_opts.keyfile = /etc/rabbitmq/certs/rabbit-server-key.pem
+  ```
 - Zookeeper - requires additional steps.
 
-    Zookeeper uses java keystores and truststores for certificate management.
-    Truststore contains trusted certificates (CA certificate) for verification of other peers connecting to this node.
-    Keystore contains this node's key and certificate for authentication with other peers.
+  Zookeeper uses java keystores and truststores for certificate management.
+  Truststore contains trusted certificates (CA certificate) for verification of other peers connecting to this node.
+  Keystore contains this node's key and certificate for authentication with other peers.
 
-    To configure keystore for zookeeper server, generated certificate and key must be converted to `pkcs12` file.
-    This file contains server certificate, server key and certificate of CA that signed the server certificate.
-    ```
-    openssl pkcs12 -export -in zookeeper-server-cert.pem -inkey zookeeper-server-key.pem -out zookeeper-server.p12 -name zk_server -CAfile ca.pem -caname root
-    ```
+  To configure keystore for zookeeper server, generated certificate and key must be converted to `pkcs12` file.
+  This file contains server certificate, server key and certificate of CA that signed the server certificate.
 
-    Created file `zookeeper-server.p12` can be converted to java `JKS` keystore using java keytool.
-    Store is protected by password specified by parameter `-deststorepass`.
-    If the `zookeeper-server.p12` is protected by password, it must be specified by `-srcstorepass` parameter.
-    ```
-    keytool -importkeystore -deststorepass zk_keystore_pass -destkeystore ./zk_keystore.jks -srckeystore zookeeper-server.p12 -srcstoretype PKCS12 -srcstorepass zk_keystore_pass -alias zk_server -deststoretype JKS
-    ```
+  ```
+  openssl pkcs12 -export -in zookeeper-server-cert.pem -inkey zookeeper-server-key.pem -out zookeeper-server.p12 -name zk_server -CAfile ca.pem -caname root
+  ```
 
-    Truststore is also required by the Zookeeper for SSL/TLS connection to work.
-    Even if client does not use certificates, this store must not be empty or errors will arise.
-    Mutual authentication can be disabled in the config later.
-    To generate `JKS` format truststore with CA certificate use following command:
-    ```
-    keytool -importcert -alias ca_cert -file certs/ca.pem -keystore ./zk_truststore.jks -storepass zk_truststore_pass -storetype JKS
-    ```
+  Created file `zookeeper-server.p12` can be converted to java `JKS` keystore using java keytool.
+  Store is protected by password specified by parameter `-deststorepass`.
+  If the `zookeeper-server.p12` is protected by password, it must be specified by `-srcstorepass` parameter.
 
-    Add following lines to `zoo.cfg` configuration file:
-    ```
-    # port config
-    secureClientPort=2181
+  ```
+  keytool -importkeystore -deststorepass zk_keystore_pass -destkeystore ./zk_keystore.jks -srckeystore zookeeper-server.p12 -srcstoretype PKCS12 -srcstorepass zk_keystore_pass -alias zk_server -deststoretype JKS
+  ```
 
-    # General ssl settings
-    serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
+  Truststore is also required by the Zookeeper for SSL/TLS connection to work.
+  Even if client does not use certificates, this store must not be empty or errors will arise.
+  Mutual authentication can be disabled in the config later.
+  To generate `JKS` format truststore with CA certificate use following command:
 
-    # Quorum ssl settings
-    sslQuorum=true
-    ssl.quorum.keyStore.location=/conf/zk_keystore.jks
-    ssl.quorum.keyStore.password=zk_keystore_pass
-    ssl.quorum.trustStore.location=/conf/zk_truststore.jks
-    ssl.quorum.trustStore.password=zk_truststore_pass
+  ```
+  keytool -importcert -alias ca_cert -file certs/ca.pem -keystore ./zk_truststore.jks -storepass zk_truststore_pass -storetype JKS
+  ```
 
-    # Client ssl settings
-    ssl.keyStore.location=/conf/zk_keystore.jks
-    ssl.keyStore.password=zk_keystore_pass
-    ssl.trustStore.location=/conf/zk_truststore.jks
-    ssl.trustStore.password=zk_truststore_pass
+  Add following lines to `zoo.cfg` configuration file:
 
-    # Enable client to connect without certificate (disable mutual authentication)
-    ssl.clientAuth=none
-    ```
+  ```
+  # port config
+  secureClientPort=2181
+
+  # General ssl settings
+  serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
+
+  # Quorum ssl settings
+  sslQuorum=true
+  ssl.quorum.keyStore.location=/conf/zk_keystore.jks
+  ssl.quorum.keyStore.password=zk_keystore_pass
+  ssl.quorum.trustStore.location=/conf/zk_truststore.jks
+  ssl.quorum.trustStore.password=zk_truststore_pass
+
+  # Client ssl settings
+  ssl.keyStore.location=/conf/zk_keystore.jks
+  ssl.keyStore.password=zk_keystore_pass
+  ssl.trustStore.location=/conf/zk_truststore.jks
+  ssl.trustStore.password=zk_truststore_pass
+
+  # Enable client to connect without certificate (disable mutual authentication)
+  ssl.clientAuth=none
+  ```
 
 ### Enable username:password authentication
+
 - RabbitMQ - user can be added only to running server.
 
-    Go to management web console and login as `guest:guest`.
-    Then to to tab users and add new users with permissions you want (in this example it would be `pero:pero`).
-    If added user is not administrator, make sure it have access (`tags`) to `monitoring` and `management` as these are needed by worker and watchdog to work correctly.
+  Go to management web console and login as `guest:guest`.
+  Then to to tab users and add new users with permissions you want (in this example it would be `pero:pero`).
+  If added user is not administrator, make sure it have access (`tags`) to `monitoring` and `management` as these are needed by worker and watchdog to work correctly.
 
-    Worker uses `/pero` vhost, that have to be added as well. `pero` user must have permissions to access this vhost.
+  Worker uses `pero` vhost, that have to be added as well. `pero` user must have permissions to access this vhost.
 
-    In production environment it is also good idea to change password of the default user `guest` or even better, add another admin account and then delete `guest` entirely.
-
+  In production environment it is also good idea to change password of the default user `guest` or even better, add another admin account and then delete `guest` entirely.
 - Zookeeper - user have to be added before server is started.
 
-    Zookeeper does not have its own implementation of authentication, it uses third party authentication providers like SASL (Simple Authentication and Security Layer), Kerberos, Mutual SSL/TLS authentication, etc.
-    Authentication provider can be configured using `authProvider` option in config file. In this example SASL is used.
-    Following lines needs to be added to config to enforce SASL authentication:
-    ```
-    # Authentication
-    authProvider.sasl=org.apache.zookeeper.server.auth.SASLAuthenticationProvider
-    enforce.auth.enabled=true
-    enforce.auth.schemes=sasl
-    ```
+  Zookeeper does not have its own implementation of authentication, it uses third party authentication providers like SASL (Simple Authentication and Security Layer), Kerberos, Mutual SSL/TLS authentication, etc.
+  Authentication provider can be configured using `authProvider` option in config file. In this example SASL is used.
+  Following lines needs to be added to config to enforce SASL authentication:
 
-    Then path to the additional configuration file with user database have to be provided.
-    This config file is required by SASL Java library, however zookeeper does not supports it in config, so it have to be added via server JVM flag.
-    Create file java.env in the same directory as zoo.cfg (here `/conf/`) and add following line:
-    ```
-    SERVER_JVMFLAGS="-Djava.security.auth.login.config=/conf/auth.conf"
-    ```
+  ```
+  # Authentication
+  authProvider.sasl=org.apache.zookeeper.server.auth.SASLAuthenticationProvider
+  enforce.auth.enabled=true
+  enforce.auth.schemes=sasl
+  ```
 
-    Then create SASL JAAS config file in location you specified via JVM flag (here `/conf/auth.conf`) and add username and password for each user.
-    Here two users are added, `super` with password `admin_pass` and `pero` with password `pero`.
-    On the first line is the specification of algorithm used to hash passwords of these users. Here it is the default MD5.
-    ```
-    Server {
-        org.apache.zookeeper.server.auth.DigestLoginModule required
-        user_super="admin_pass"
-        user_pero="pero";
-    };
-    ```
+  Then path to the additional configuration file with user database have to be provided.
+  This config file is required by SASL Java library, however zookeeper does not supports it in config, so it have to be added via server JVM flag.
+  Create file java.env in the same directory as zoo.cfg (here `/conf/`) and add following line:
+
+  ```
+  SERVER_JVMFLAGS="-Djava.security.auth.login.config=/conf/auth.conf"
+  ```
+
+  Then create SASL JAAS config file in location you specified via JVM flag (here `/conf/auth.conf`) and add username and password for each user.
+  Here two users are added, `super` with password `admin_pass` and `pero` with password `pero`.
+  On the first line is the specification of algorithm used to hash passwords of these users. Here it is the default MD5.
+
+  ```
+  Server {
+      org.apache.zookeeper.server.auth.DigestLoginModule required
+      user_super="admin_pass"
+      user_pero="pero";
+  };
+  ```
 
 ### Example configs
+
 Configuration examples for RabbitMQ and Zookeeper are avaliable in subfolder `sample-config`.
 SFTP server users are configured via docker container parameter.
 Worker, watchdog and all tools supports `--user` and `--password` options.
 
 ### Additional info on SSL/TLS and authentication
-Zookeeper:  
-https://zookeeper.apache.org/doc/r3.8.0/zookeeperAdmin.html  
-https://docs.confluent.io/platform/current/security/zk-security.html  
+
+Zookeeper:
+https://zookeeper.apache.org/doc/r3.8.0/zookeeperAdmin.html
+https://docs.confluent.io/platform/current/security/zk-security.html
 https://cwiki.apache.org/confluence/display/ZOOKEEPER/ZooKeeper+SSL+User+Guide
 
-RabbitMQ:  
+RabbitMQ:
 https://www.rabbitmq.com/ssl.html
 
 ## Starting required services.
+
 Mounted paths are required for data persistency and configurations.
 Service can recover this data after restart, so it does not have to be set up again from scratch.
+
 ```
 docker run  -d --rm -p 2181:2181 \
             -v /home/"$USER"/zookeeper-data:/data \
@@ -202,6 +299,7 @@ docker run  -d --rm -p 2181:2181 \
             -v /home/"$USER"/zookeeper-config/auth.conf:/conf/auth.conf \
             --name="zookeeper" zookeeper
 ```
+
 ```
 docker run  -d --rm -p 5672:5672 -p 15672:15672 \
             -v /home/"$USER"/rabbitmq-data:/var/lib/rabbitmq \
@@ -210,6 +308,7 @@ docker run  -d --rm -p 5672:5672 -p 15672:15672 \
             --hostname "$(hostname)" \
             --name rabbitmq rabbitmq:management
 ```
+
 ```
 docker run  -d --rm -p 2222:22 \
             -v /home/"$USER"/ftp:/home/pero/ \
@@ -219,19 +318,23 @@ docker run  -d --rm -p 2222:22 \
 ## Initial system configuration
 
 Set default server addresses and ports for auto-configuration:
+
 ```
 python scripts/server_config_manager.py -z 127.0.0.1 --add-mq-servers 127.0.0.1 --add-ftp-servers 127.0.0.1:2222 --add-monitoring-servers 127.0.0.1
 ```
 
 Create processing stages for OCR pipeline:
+
 ```
 python scripts/stage_config_manager.py --name ocr_stage_x --config path/to/ocr_stage_x/config.ini --remote-path path/to/additional/data/on/ftp/server.tar.xz
 ```
+
 Please note that you must upload additional files to SFTP server manually. Command above specifies just path used by worker to download these files from the server. To upload files use your favourite SFTP client.
 
 For more details on configurations please visit pero-ocr git (https://github.com/DCGM/pero-ocr) and webpage (https://pero.fit.vutbr.cz/) to get more information.
 
 Create output queue from where results can be downloaded. Output queue is stage without processing configuration.
+
 ```
 python scripts/stage_config_manager.py --name out
 ```
@@ -239,6 +342,7 @@ python scripts/stage_config_manager.py --name out
 ## Central logging
 
 Logging is done using RabbitMQ queue. Log daemon receiving log messages from workers requires configuration in .ini format with following fields:
+
 ```
 [LOGD]
 zookeeper_servers=localhost
@@ -255,6 +359,7 @@ Log queue has to be manually created (or by `stage_config_manager.py` script). L
 The `log_queue` parameter tells log daemon which queue is logging queue it should listen on. Logs are downloaded To folder `output_dir` and rotated every `log_rotation _period` seconds. At most `number_of_files` logs are kept, older logs are deleted. `number_of_files=0` disables log rotation.
 
 To run the log daemon use:
+
 ```
 python log_daemon/log_daemon.py -c path/to/logd_config.ini
 ```
@@ -262,6 +367,7 @@ python log_daemon/log_daemon.py -c path/to/logd_config.ini
 ## Running worker and watchdog
 
 Worker requires configuration for connecting to services and setting up logging queue. Rest of the configuration is downloaded from zookeeper.
+
 ```
 [WORKER]
 zookeeper_servers=localhost
@@ -272,11 +378,13 @@ log_queue=log
 ```
 
 To run worker use:
+
 ```
 python worker/run_worker.py -c path/to/worker_config.ini
 ```
 
 Watchdog requires this configuration:
+
 ```
 [WATCHDOG]
 zookeeper_servers=localhost
@@ -284,9 +392,11 @@ username=pero
 password=pero_pass
 ca_cert=/etc/pero/certificates/ca.pem
 ```
+
 Alternatively worker configuration can be used, watchdog will get required information from the `[WORKER]` section.
 
 To run watchdog this command:
+
 ```
 python watchdog/worker_watchdog.py -c path/to/watchdog_config.ini
 ```
@@ -294,20 +404,71 @@ python watchdog/worker_watchdog.py -c path/to/watchdog_config.ini
 ## Processing
 
 Uploading images for processing:
+
 ```
 python scripts/publisher.py --stages stage1 stage2 stage3 out --images input/file/1 input/file/2
 ```
 
 Downloading results:
+
 ```
 python scripts/publisher.py --directory output/directory/path --download out
 ```
-If you want to keep downloading images from ```out``` stage, add ```--keep-running``` argument at the end of the command above.
 
+If you want to keep downloading images from ``out`` stage, add ``--keep-running`` argument at the end of the command above.
+
+## Using stage manager programmatically
+
+Stages in the system can be defined using ``stage_config_manager.py`` script.
+However if you want to write your own configuration manager, you can use object defined in this script to do so.
+
+For parsing host:port to correct format library function from ``/libs/worker_functions/connection_aux_functions.py`` can be used. To create zookeeper server list from list of items in format 'host:port' use ``zookeeper_server_list`` function, for rabbitmq use ``server_list`` function.
+
+Script contains ``ZkConfigManager`` class for manipulating configuration in zookeeper.
+Example of creating instance:
+
+```
+zk_config_manager = ZkConfigManager(
+  zk_servers='server1:2181,server2',
+  username='pero',
+  password='pero_pass',
+  ca_cert='path/to/ca/cert.pem',
+  logger=logging.getLogger(__name__)
+)
+```
+
+For configuring queue for given stage, ``MQConfigManager`` instance is needed.
+One can be created as so:
+
+```
+mq_config_manager = MQConfigManager(
+  mq_servers=[{'host': 'server1', 'port': 1234}, {'host': '1.2.3.4', 'port': None}],
+  username='pero',
+  password='pero_pass',
+  ca_cert='path/to/ca/cert.pem',
+  logger=logging.getLogger(__name__)
+)
+```
+
+To manipulate files on SFTP, use ``SFTP_Client`` located in ``/libs/worker_functions/``.
+Instance can be created as this:
+
+```
+sftp_client = SFTP_Client(
+  sftp_servers=[{'host': 'server1', 'port': 1234}, {'host': '1.2.3.4', 'port': None}],
+  username='pero',
+  password='pero_pass',
+  logger=logging.getLogger(__name__)
+)
+```
+
+SFTP client does not use certificate for server verification.
+Server list format is the same as for MQ configuration manager.
 
 ## Additional info
 
 System was tested with these versions of libraries:
+
 ```
 kazoo==2.8.0
 pika==1.2.0
@@ -330,4 +491,5 @@ pyamg==4.2.1
 imgaug==0.4.0
 arabic_reshaper==2.1.3
 ```
+
 Python version used during development was `Python 3.9.2` but it should work with latest versions of python and libraries as well.

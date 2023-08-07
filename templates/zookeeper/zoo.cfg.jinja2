@@ -12,8 +12,8 @@ admin.enableServer=true
 
 # port config
 # this port should be only for localhost client connection as it is not encrypted
-clientPort=2180
-secureClientPort=2181
+clientPort={{zookeeper_port}}
+secureClientPort={{zookeeper_secure_port}}
 server.1=localhost:2888:3888
 
 # General ssl settings
@@ -22,15 +22,15 @@ serverCnxnFactory=org.apache.zookeeper.server.NettyServerCnxnFactory
 # Quorum ssl settings
 sslQuorum=true
 ssl.quorum.keyStore.location=/conf/zk_keystore.jks
-ssl.quorum.keyStore.password=zk_keystore_pass
+ssl.quorum.keyStore.password={{ zookeeper_keystore_password }}
 ssl.quorum.trustStore.location=/conf/zk_truststore.jks
-ssl.quorum.trustStore.password=zk_truststore_pass
+ssl.quorum.trustStore.password={{ zookeeper_truststore_password }}
 
 # Client ssl settings
 ssl.keyStore.location=/conf/zk_keystore.jks
-ssl.keyStore.password=zk_keystore_pass
+ssl.keyStore.password={{ zookeeper_keystore_password }}
 ssl.trustStore.location=/conf/zk_truststore.jks
-ssl.trustStore.password=zk_truststore_pass
+ssl.trustStore.password={{ zookeeper_truststore_password }}
 
 # Enable client to connect without certificate (disable mutual authentication)
 ssl.clientAuth=none

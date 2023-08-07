@@ -1,0 +1,40 @@
+FROM debian:bullseye
+
+# default paths
+ARG install_path=/opt/pero/pero-worker
+ARG config_path=/etc/pero
+
+# install dir
+RUN mkdir -p ${install_path}
+
+# copy dependencies
+COPY ./docker/requirements_lightweight.txt ${install_path}/requirements.txt
+COPY ./libs ${install_path}/libs
+
+# setup config folders
+RUN mkdir -p ${config_path}/certificates
+
+# copy watchdog
+COPY ./watchdog ${install_path}/watchdog
+COPY ./docker/run_watchdog.sh ${install_path}
+
+# copy config
+COPY ./sample-config/watchdog.ini ${config_path}
+
+# set workdir
+WORKDIR ${install_path}
+
+# install dependencies
+RUN apt-get -y update && \
+    apt-get -y install libmagic1 python3-pip && \
+    apt-get -y clean
+
+RUN pip install --no-cache --upgrade pip && \
+    pip install --no-cache --requirement requirements.txt
+
+# setup env
+ENV USE_CONFIG=1
+ENV PYTHONPATH=${install_path}/libs
+
+# run worker
+CMD ["/bin/sh", "run_watchdog.sh"]
