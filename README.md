@@ -11,7 +11,75 @@ Processing system uses 6 components.
 - SFTP for storing OCR binary files.
 - Central log daemon for receiving logs from workers.
 
-## setup
+## Quick setup
+
+### Building docker image
+
+When worker is used from image full dependencies does not have to be installed. To run worker without container, see `Full setup` section.
+
+First git submodules have to be downloaded.
+
+```
+git submodule init
+git submodule update
+```
+
+Docker images for services can be build using `docker-build-all.sh` script. `pero-ocr` container have to be available for worker container to build correctly. Images can be built from specific commit or without downloading the pero-worker repository at all.
+
+```
+docker build -f docker/Dockerfile.worker -t 'pero-worker' https://github.com/DCGM/pero-worker#<branch-name/commit-hash/tag>
+docker build -f docker/Dockerfile.watchdog -t 'pero-watchdog' https://github.com/DCGM/pero-worker#<branch-name/commit-hash/tag>
+docker build -f docker/Dockerfile.log_daemon -t 'pero-logd' https://github.com/DCGM/pero-worker#<branch-name/commit-hash/tag>
+```
+
+To use service configuration script and control the system, minimal processing system dependencies have to installed. Also python path have to be set to make submodules accessible.
+Or you can use `install_dependencies.sh` to install all dependencies - see `Full setup` section. If you want to build docker images localy using build script, make sure to use it before creating virtual environment. Otherwise it is better to use remote URLs above to prevent copying the python environment into the container.
+
+```
+python3 -m venv .venv
+. ./.venv/bin/activate
+pip install -U pip
+pip install -r docker/requirements_lightweight.txt
+echo 'export PYTHONPATH="$PYTHONPATH:$(dirname $VIRTUAL_ENV)/libs:$(dirname $VIRTUAL_ENV)/pero-ocr"' >> ./.venv/bin/activate
+export PYTHONPATH="$PYTHONPATH:$(dirname $VIRTUAL_ENV)/libs:$(dirname $VIRTUAL_ENV)/pero-ocr"
+```
+
+Now `scripts/system_setup.py` can be used to setup whole system for you on local computer. Script generates configuration files and then runs the core of the processing system (Apache zookeeper, RabbitMQ, sftp server) and applies additional configuration that have to be done after the system is started. Basic usage:
+
+```
+python scripts/system_setup.py -z <ip/hostname to use with zookeeper> -s <ip/hostname to use with RabbitMQ> -f <ip/hostname to use with sftp>
+```
+
+For other options see `python scripts/system_setup.py --help`.
+
+Script generates 2 subdirectories in the project root directory. First directory is `data/` with subdirectories for each core service. Second is `config/` which holds all the generated configuration.
+Core services should be running, which can be verified by viewing the `docker ps --all` output.
+
+Now log daemon, watchdog and worker services can be started and connected to the system. Configurations are available in `config/logd.ini`, `config/watchdog.ini`, `config/worker.ini`.
+To start services run
+
+```
+docker run -d --name pero-logd -v "$(pwd)"/data/logs:/var/log/pero -v "$(pwd)"/config:/etc/pero pero-logd
+docker run -d --name pero-watchdog -v "$(pwd)"/config:/etc/pero pero-watchdog
+docker run -d --name pero-worker -v "$(pwd)"/config:/etc/pero pero-worker
+```
+
+You can also add `--hostname "$(hostname)"` to the worker after the `run` command to pass in computers hostname that will be visible in the logs. Otherwise random hostname will be generated in the docker container.
+
+Next step is to configure processing stages using stage manager:
+
+```
+python scripts/stage_config_manager.py --name ocr_stage_x --config path/to/ocr_stage_x/config.ini --remote-path path/to/additional/data/on/ftp/server.tar.xz --file path/to/data/to/copy/on/ftp/server.tar.xz
+```
+
+And to create output stage for processed data that are ready to be picked up by user.
+
+```
+python scripts/stage_config_manager.py --name out
+```
+
+
+## Full setup
 
 Docker is used in this example. Please visit https://docs.docker.com/engine/install/ and follow instructions for your operating system.
 Use installation instruction for Apache zookeeper, RabbitMQ and your favourite SFTP server, if you don't want to use docker.
@@ -30,7 +98,7 @@ Source created virtual environment:
 . ./.venv/bin/activate
 ```
 
-Download pero-ocr to `pero-ocr/` folder and `pero-worker-libs` to libs folder:
+Download pero-ocr to `pero-ocr/` folder and `pero-worker-libs` to libs folder using:
 
 ```
 git submodule init
@@ -385,7 +453,6 @@ sftp_client = SFTP_Client(
 
 SFTP client does not use certificate for server verification.
 Server list format is the same as for MQ configuration manager.
-
 
 ## Additional info
 

@@ -330,7 +330,9 @@ def generate_client_configs(
     :param username: client user name
     :param password: client user's password
     :param ca_cert: CA certificate for server identity verification
+                    (omitted - container default location is used instead)
     :param log_dir: output directory where log daemon will place collected logs
+                    (omitted - container default location is used instead)
     """
     env = jinja2.Environment(
         loader=jinja2.FileSystemLoader('templates'),
@@ -345,7 +347,7 @@ def generate_client_configs(
             zookeeper_servers=cf.zk_server_list(zk_servers),
             username=username,
             password=password,
-            ca_cert=ca_cert
+            ca_cert='/etc/pero/certificates/ca.pem'
         ))
     
     watchdog_config = env.get_template('watchdog.ini.jinja2')
@@ -354,7 +356,7 @@ def generate_client_configs(
             zookeeper_servers=cf.zk_server_list(zk_servers),
             username=username,
             password=password,
-            ca_cert=ca_cert
+            ca_cert='/etc/pero/certificates/ca.pem'
         ))
     
     logd_config = env.get_template('logd.ini.jinja2')
@@ -363,8 +365,8 @@ def generate_client_configs(
             zookeeper_servers=cf.zk_server_list(zk_servers),
             username=username,
             password=password,
-            ca_cert=ca_cert,
-            output_dir=log_dir
+            ca_cert='/etc/pero/certificates/ca.pem',
+            output_dir='/var/log/pero'
         ))
 
 def run_services(env):
