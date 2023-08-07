@@ -78,6 +78,17 @@ And to create output stage for processed data that are ready to be picked up by 
 python scripts/stage_config_manager.py --name out
 ```
 
+Base services can be started by:
+
+```
+docker compose -f scripts/services-docker-compose.yaml --env-file config/docker.env up -d
+```
+
+And stopped by:
+
+```
+docker compose -f scripts/services-docker-compose.yaml --env-file config/docker.env down
+```
 
 ## Full setup
 
