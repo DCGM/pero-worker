@@ -11,11 +11,7 @@ Processing system uses 6 components.
 - SFTP for storing OCR binary files.
 - Central log daemon for receiving logs from workers.
 
-## Quick setup
-
-### Building docker image
-
-When worker is used from image full dependencies does not have to be installed. To run worker without container, see `Full setup` section.
+## Quick setup - Docker
 
 First git submodules have to be downloaded.
 
@@ -24,16 +20,15 @@ git submodule init
 git submodule update
 ```
 
-Docker images for services can be build using `docker-build-all.sh` script. `pero-ocr` container have to be available for worker container to build correctly. Images can be built from specific commit or without downloading the pero-worker repository at all.
+NOTE: Docker images can be built from specific commit or without downloading the pero-worker repository at all.
 
-```
-docker build -f docker/Dockerfile.worker -t 'pero-worker' https://github.com/DCGM/pero-worker#<branch-name/commit-hash/tag>
-docker build -f docker/Dockerfile.watchdog -t 'pero-watchdog' https://github.com/DCGM/pero-worker#<branch-name/commit-hash/tag>
-docker build -f docker/Dockerfile.log_daemon -t 'pero-logd' https://github.com/DCGM/pero-worker#<branch-name/commit-hash/tag>
-```
+### Manager
+
+Docker images for manager can be build using `docker-build-manager.sh` script.
 
 To use service configuration script and control the system, minimal processing system dependencies have to installed. Also python path have to be set to make submodules accessible.
-Or you can use `install_dependencies.sh` to install all dependencies - see `Full setup` section. If you want to build docker images localy using build script, make sure to use it before creating virtual environment. Otherwise it is better to use remote URLs above to prevent copying the python environment into the container.
+
+NOTE: Alternatively you can use `install_dependencies.sh` to install all dependencies - see `Full setup` section. If you want to build docker images localy using build script, make sure to use it before creating virtual environment. Otherwise it is better to use remote URLs above to prevent copying the python environment into the container.
 
 ```
 python3 -m venv .venv
@@ -44,41 +39,40 @@ echo 'export PYTHONPATH="$PYTHONPATH:$(dirname $VIRTUAL_ENV)/libs:$(dirname $VIR
 export PYTHONPATH="$PYTHONPATH:$(dirname $VIRTUAL_ENV)/libs:$(dirname $VIRTUAL_ENV)/pero-ocr"
 ```
 
-Now `scripts/system_setup.py` can be used to setup whole system for you on local computer. Script generates configuration files and then runs the core of the processing system (Apache zookeeper, RabbitMQ, sftp server) and applies additional configuration that have to be done after the system is started. Basic usage:
+`scripts/system_setup.py` script generates configuration files and then runs the core of the processing system (Apache zookeeper, RabbitMQ, sftp server) and applies additional configuration that have to be done after the system is started. Basic usage:
 
 ```
 python scripts/system_setup.py -z <ip/hostname to use with zookeeper> -s <ip/hostname to use with RabbitMQ> -f <ip/hostname to use with sftp>
 ```
 
-For other options see `python scripts/system_setup.py --help`.
-
 Script generates 2 subdirectories in the project root directory. First directory is `data/` with subdirectories for each core service. Second is `config/` which holds all the generated configuration.
-Core services should be running, which can be verified by viewing the `docker ps --all` output.
 
-Now log daemon, watchdog and worker services can be started and connected to the system. Configurations are available in `config/logd.ini`, `config/watchdog.ini`, `config/worker.ini`.
-To start services run
+NOTE: core services should be running, which can be verified by viewing the `docker ps --all` output.
 
+log daemon and watchdog services can be started using: 
 ```
 docker run -d --name pero-logd -v "$(pwd)"/data/logs:/var/log/pero -v "$(pwd)"/config:/etc/pero pero-logd
 docker run -d --name pero-watchdog -v "$(pwd)"/config:/etc/pero pero-watchdog
-docker run -d --name pero-worker -v "$(pwd)"/config:/etc/pero pero-worker
 ```
+NOTE: you can also add `--hostname "$(hostname)"` to the worker after the `run` command to pass in computers hostname that will be visible in the logs. Otherwise random hostname will be generated in the docker container.
 
-You can also add `--hostname "$(hostname)"` to the worker after the `run` command to pass in computers hostname that will be visible in the logs. Otherwise random hostname will be generated in the docker container.
+Configurations are available in `config/logd.ini` and `config/watchdog.ini`.
 
-Next step is to configure processing stages using stage manager:
-
-```
-python scripts/stage_config_manager.py --name ocr_stage_x --config path/to/ocr_stage_x/config.ini --remote-path path/to/additional/data/on/ftp/server.tar.xz --file path/to/data/to/copy/on/ftp/server.tar.xz
-```
-
-And to create output stage for processed data that are ready to be picked up by user.
+#### Configure processing stages
 
 ```
-python scripts/stage_config_manager.py --name out
+python scripts/stage_config_manager.py --name stage_name --config path/to/pero-ocr.model/config/to/copy/on/ftp/server/config.ini --file path/to/pero-ocr.model/to/copy/on/ftp/server/pero-ocr.model.[tar.xz|zip] --remote-path pero/stage_folder_name -u pero -p "$(cat config/pero.pass)" -e config/certificates/ca.pem
+```
+NOTE: --remote-path must include pero/ as the begging of the path, any stage_folder_name may be specified 
+
+Create output stage for processed data:
+```
+python scripts/stage_config_manager.py --name out -u pero -p "$(cat config/pero.pass)" -e config/certificates/ca.pem
 ```
 
-Base services can be started by:
+#### Compose
+
+Base services (Apache zookeeper, RabbitMQ, sftp server) can be started by:
 
 ```
 docker compose -f scripts/services-docker-compose.yaml --env-file config/docker.env up -d
@@ -89,6 +83,20 @@ And stopped by:
 ```
 docker compose -f scripts/services-docker-compose.yaml --env-file config/docker.env down
 ```
+
+### Worker 
+
+Docker images for worker can be build using `docker-build-worker.sh` script. 
+
+Now worker service can be started using:
+```
+docker run -d --name pero-worker -v "$(pwd)"/config:/etc/pero pero-worker
+```
+NOTE: you can also add `--hostname "$(hostname)"` to the worker after the `run` command to pass in computers hostname that will be visible in the logs. Otherwise random hostname will be generated in the docker container.
+
+Configuration is available in `config/worker.ini` (generated with `scripts/system_setup.py`)
+
+
 
 ## Full setup
 

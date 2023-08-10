@@ -1,6 +1,6 @@
 [submodule "pero-ocr"]
 	path = pero-ocr
-	url = https://github.com/xraurp/pero-ocr.git
+	url = https://github.com/DCGM/pero-ocr.git
 	branch = develop
 [submodule "libs"]
 	path = libs
