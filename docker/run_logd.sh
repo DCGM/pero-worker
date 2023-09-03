@@ -10,6 +10,11 @@ run_app () {
 
 cmd=""
 
+# debug
+if [ -n "${DEBUG}" ]; then
+    cmd="${cmd} -d"
+fi
+
 if [ -n "${USE_CONFIG}" ]; then
     run_app "${cmd} -c ${CONFIG_FILE:-/etc/pero/logd.ini}"
     exit
@@ -37,10 +42,5 @@ fi
 
 # number of files to keep
 cmd="${cmd} -n ${NUMBER_OF_FILES:-20}"
-
-# debug
-if [ -n "${DEBUG}" ]; then
-    cmd="${cmd} -d"
-fi
 
 run_app "${cmd}"

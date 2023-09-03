@@ -10,6 +10,11 @@ run_app () {
 
 cmd=""
 
+# debug
+if [ -n "${DEBUG}" ]; then
+    cmd="${cmd} -d"
+fi
+
 if [ -n "${USE_CONFIG}" ]; then
     run_app "${cmd} -c ${CONFIG_FILE:-/etc/pero/watchdog.ini}"
     exit
@@ -23,11 +28,6 @@ cmd="${cmd} -u ${USERNAME:-pero} -p ${PASSWORD:-pero_pass}"
 
 # add certificate path
 cmd="${cmd} -e ${CA_CERT:-/etc/pero/certificates/ca.pem}"
-
-# debug
-if [ -n "${DEBUG}" ]; then
-    cmd="${cmd} -d"
-fi
 
 # dry run
 if [ -n "${DRY_RUN}" ]; then
