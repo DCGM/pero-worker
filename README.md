@@ -27,9 +27,9 @@ git submodule update
 Docker images for services can be build using `docker-build-all.sh` script. `pero-ocr` container have to be available for worker container to build correctly. Images can be built from specific commit or without downloading the pero-worker repository at all.
 
 ```
-docker build -f docker/Dockerfile.worker -t 'pero-worker' https://github.com/DCGM/pero-worker#<branch-name/commit-hash/tag>
-docker build -f docker/Dockerfile.watchdog -t 'pero-watchdog' https://github.com/DCGM/pero-worker#<branch-name/commit-hash/tag>
-docker build -f docker/Dockerfile.log_daemon -t 'pero-logd' https://github.com/DCGM/pero-worker#<branch-name/commit-hash/tag>
+docker build -f docker/Dockerfile.worker -t 'pero-worker' https://github.com/DCGM/pero-worker.git#<branch-name/commit-hash/tag>
+docker build -f docker/Dockerfile.watchdog -t 'pero-watchdog' https://github.com/DCGM/pero-worker.git#<branch-name/commit-hash/tag>
+docker build -f docker/Dockerfile.log_daemon -t 'pero-logd' https://github.com/DCGM/pero-worker.git#<branch-name/commit-hash/tag>
 ```
 
 To use service configuration script and control the system, minimal processing system dependencies have to installed. Also python path have to be set to make submodules accessible.
