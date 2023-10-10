@@ -2,4 +2,5 @@
 ffmpeg
 build-essential
 python3-dev
+libgeos-c1v5
 

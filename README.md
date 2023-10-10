@@ -22,6 +22,8 @@ git submodule update
 
 NOTE: Docker images can be built from specific commit or without downloading the pero-worker repository at all.
 
+WARNING: All necessary ports must be enabled
+
 ### Manager
 
 Docker images for manager can be build using `docker-build-manager.sh` script.
@@ -70,7 +72,48 @@ Create output stage for processed data:
 python scripts/stage_config_manager.py --name out -u pero -p "$(cat config/pero.pass)" -e config/certificates/ca.pem
 ```
 
-#### Compose
+List configured stages:
+```
+python scripts/stage_config_manager.py -i -z <ip/hostname to use with zookeeper> -u pero -p "$(cat config/pero.pass)" -e config/certificates/ca.pem
+```
+
+Show config of stage stage_name:
+```
+python scripts/stage_config_manager.py -s stage_name -i -z pckohut.fit.vutbr.cz -u pero -p "$(cat config/pero.pass)" -e config/certificates/ca.pem
+```
+
+#### Test processing stage
+
+NOTE: worker (see below) must be runnig.
+
+Uploading images for processing:
+
+```
+python scripts/publisher.py --stages stage1 stage2 stage3 out --images input/file/1 input/file/2 -u pero -p "$(cat config/pero.pass)" -e config/certificates/ca.pem
+```
+
+Downloading results:
+
+```
+python scripts/publisher.py --directory output/directory/path --download out -u pero -p "$(cat config/pero.pass)" -e config/certificates/ca.pem
+```
+
+If you want to keep downloading images from ``out`` stage, add ``--keep-running`` argument at the end of the command above.
+
+
+### Worker 
+
+Docker images for worker can be build using `docker-build-worker.sh` script. 
+
+Now worker service can be started using:
+```
+docker run --gpus all -d --name pero-worker --hostname "$(hostname)" -v "$(pwd)"/config:/etc/pero pero-worker
+```
+NOTE: you can also add `--hostname "$(hostname)"` to the worker after the `run` command to pass in computers hostname that will be visible in the logs. Otherwise random hostname will be generated in the docker container.
+
+Configuration is available in `config/worker.ini` (generated with `scripts/system_setup.py`)
+
+### Compose
 
 Base services (Apache zookeeper, RabbitMQ, sftp server) can be started by:
 
@@ -83,20 +126,6 @@ And stopped by:
 ```
 docker compose -f scripts/services-docker-compose.yaml --env-file config/docker.env down
 ```
-
-### Worker 
-
-Docker images for worker can be build using `docker-build-worker.sh` script. 
-
-Now worker service can be started using:
-```
-docker run -d --name pero-worker -v "$(pwd)"/config:/etc/pero pero-worker
-```
-NOTE: you can also add `--hostname "$(hostname)"` to the worker after the `run` command to pass in computers hostname that will be visible in the logs. Otherwise random hostname will be generated in the docker container.
-
-Configuration is available in `config/worker.ini` (generated with `scripts/system_setup.py`)
-
-
 
 ## Full setup
 

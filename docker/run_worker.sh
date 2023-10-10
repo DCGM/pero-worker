@@ -10,6 +10,11 @@ run_app () {
 
 cmd=""
 
+# debug
+if [ -n "${DEBUG}" ]; then
+    cmd="${cmd} -d"
+fi
+
 if [ -n "${USE_CONFIG}" ]; then
     run_app "${cmd} -c ${CONFIG_FILE:-/etc/pero/worker.ini}"
     exit
@@ -39,10 +44,5 @@ fi
 
 # log queue
 cmd="${cmd} -q ${LOG_QUEUE:-log}"
-
-# debug
-if [ -n "${DEBUG}" ]; then
-    cmd="${cmd} -d"
-fi
 
 run_app "${cmd}"
