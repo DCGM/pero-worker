@@ -602,7 +602,7 @@ class ZkWorkerController(WorkerController, ZkClient):
             raise
         except Exception as e:
             self.logger.error(f'Failed to get configuration for processing stage {stage}!')
-            self.logger.debug(f'Received error:\n{traceback.format_exc()}')
+            self.logger.error(f'Received error:\n{traceback.format_exc()}')
             self.update_status(constants.STATUS_CONFIGURATION_FAILED)
             self.logger.error('Removing stage configuration from local cache!')
             self.ocr_file_cache.remove_stage(stage)
