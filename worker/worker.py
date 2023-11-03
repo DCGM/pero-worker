@@ -18,7 +18,7 @@ import datetime
 import time
 import zipfile
 import tarfile
-from io import StringIO  # logging to message
+from io import StringIO, BytesIO  # logging to message
 
 # dummy processing
 import random
@@ -975,7 +975,7 @@ class Worker(object):
         try:
             if xml_in:
                 page_layout = PageLayout()
-                page_layout.from_pagexml_string(xml_in)
+                page_layout.from_pagexml(BytesIO(xml_in))
             else:
                 page_layout = PageLayout(id=img_name, page_size=(img.shape[0], img.shape[1]))
             if logits_in:

@@ -49,12 +49,14 @@ python scripts/system_setup.py -z <ip/hostname to use with zookeeper> -s <ip/hos
 
 Script generates 2 subdirectories in the project root directory. First directory is `data/` with subdirectories for each core service. Second is `config/` which holds all the generated configuration.
 
-NOTE: core services should be running, which can be verified by viewing the `docker ps --all` output.
+NOTE: core services should be running (see compose below), which can be verified by viewing the `docker ps --all` output.
+NOTE: docker virtual network virtua_network can be created manually but the respective adresses in .ini files in config folder must be changed
+
 
 log daemon and watchdog services can be started using: 
 ```
-docker run -d --name pero-logd -v "$(pwd)"/data/logs:/var/log/pero -v "$(pwd)"/config:/etc/pero pero-logd
-docker run -d --name pero-watchdog -v "$(pwd)"/config:/etc/pero pero-watchdog
+docker run -d --name pero-logd [--network=virtual_network] -v "$(pwd)"/data/logs:/var/log/pero -v "$(pwd)"/config:/etc/pero pero-logd
+docker run -d --name pero-watchdog [--network=virtual_network] -v "$(pwd)"/config:/etc/pero pero-watchdog
 ```
 NOTE: you can also add `--hostname "$(hostname)"` to the worker after the `run` command to pass in computers hostname that will be visible in the logs. Otherwise random hostname will be generated in the docker container.
 
@@ -107,7 +109,7 @@ Docker images for worker can be build using `docker-build-worker.sh` script.
 
 Now worker service can be started using:
 ```
-docker run --gpus all -d --name pero-worker --hostname "$(hostname)" -v "$(pwd)"/config:/etc/pero pero-worker
+docker run --gpus all -d --name pero-worker [--network=virtual_network]  [--hostname "$(hostname)"] -v "$(pwd)"/config:/etc/pero pero-worker
 ```
 NOTE: you can also add `--hostname "$(hostname)"` to the worker after the `run` command to pass in computers hostname that will be visible in the logs. Otherwise random hostname will be generated in the docker container.
 

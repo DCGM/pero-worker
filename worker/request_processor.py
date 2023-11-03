@@ -8,7 +8,7 @@ import time  # dummy processing
 import random  # dummy processing
 import datetime
 import traceback
-from io import StringIO  # logging to message
+from io import StringIO, BytesIO  # logging to message
 from abc import ABC, abstractmethod
 
 # pero OCR
@@ -169,7 +169,7 @@ class PeroOcrRequestProcessor(RequestProcessor):
         try:
             if xml_in:
                 page_layout = PageLayout()
-                page_layout.from_pagexml_string(xml_in)
+                page_layout.from_pagexml(BytesIO(xml_in))
             else:
                 page_layout = PageLayout(id=img_name, page_size=(img.shape[0], img.shape[1]))
             if logits_in:

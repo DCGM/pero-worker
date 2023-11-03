@@ -13,9 +13,7 @@ services:
       - $ZOOKEEPER_DATA/data:/data
       - $ZOOKEEPER_DATA/datalog:/datalog
     hostname: $HOST_NAME
-    networks:
-      pero_core_net:
-        ipv4_address: 172.26.0.50
+        
   rabbitmq:
     image: rabbitmq:management
     ports:
@@ -26,24 +24,20 @@ services:
       - $RABBITMQ_CONFIG/certs:/etc/rabbitmq/certs
       - $RABBITMQ_DATA:/var/lib/rabbitmq
     hostname: $HOST_NAME
-    networks:
-      pero_core_net:
-        ipv4_address: 172.26.0.51
+        
   sftp:
     image: atmoz/sftp:alpine
     ports:
       - $SFTP_PORT:22
     volumes:
       - $SFTP_CONFIG/users.conf:/etc/sftp/users.conf:ro
-      - $SFTP_DATA:/home/$USERNAME
+      - $SFTP_DATA:/home/$SFTP_USER
     hostname: $HOST_NAME
-    networks:
-      pero_core_net:
-        ipv4_address: 172.26.0.52
+    #stdin_open: true
+    #tty: true
 
 networks:
-  pero_core_net:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: "172.26.0.0/16"
+  default:
+    name: scribble_network
+    external: true
+
