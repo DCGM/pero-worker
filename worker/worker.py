@@ -990,7 +990,7 @@ class Worker(object):
         # save output
         xml_out = page_layout.to_pagexml_string()
         try:
-            logits_out = page_layout.save_logits_bytes()
+            logits_out = page_layout.save_logits_bytes(missing_line_logits_ok=True)
         except Exception:
             self.logger.debug('No logits available to save!')
             self.logger.debug('Received error:\n{}'.format(traceback.format_exc()))
